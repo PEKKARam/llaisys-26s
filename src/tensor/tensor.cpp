@@ -164,27 +164,122 @@ void Tensor::debug() const {
 }
 
 bool Tensor::isContiguous() const {
-    TO_BE_IMPLEMENTED();
-    return true;
+    ptrdiff_t expected_stride = 1;
+    bool contig_if_nonempty = true;
+    for (size_t dim = ndim(); dim-- > 0;) { // size_t 遍历注意判断条件
+        if (_meta.shape[dim] == 0) {
+            return true;
+        }
+        if (contig_if_nonempty) {
+            if (_meta.shape[dim] != 1 && _meta.strides[dim] != expected_stride) {
+                contig_if_nonempty = false;
+            }
+            expected_stride *= static_cast<ptrdiff_t>(_meta.shape[dim]);
+        }
+    }
+    return contig_if_nonempty;
 }
 
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    CHECK_ARGUMENT(order.size() == ndim(), "permute order must contain every dimension");
+
+    TensorMeta meta{dtype(), std::vector<size_t>(ndim()), std::vector<ptrdiff_t>(ndim())};
+    std::vector<bool> used(ndim(), false);
+    for (size_t dim = 0; dim < ndim(); ++dim) {
+        CHECK_ARGUMENT(order[dim] < ndim(), "permute dimension is out of range");         // error: order[dim] >= ndim()
+        CHECK_ARGUMENT(!used[order[dim]], "permute order contains duplicate dimensions"); // error: duplicate dimenmsions
+        used[order[dim]] = true;
+        meta.shape[dim] = _meta.shape[order[dim]];
+        meta.strides[dim] = _meta.strides[order[dim]];
+    }
+
+    // Permuting changes only metadata, so the new tensor shares storage and offset.
+    return std::shared_ptr<Tensor>(new Tensor(std::move(meta), _storage, _offset));
 }
 
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    const size_t new_numel = std::accumulate(
+        shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    CHECK_ARGUMENT(new_numel == numel(), "view shape must preserve the number of elements");
+
+    std::vector<ptrdiff_t> new_strides(shape.size());
+
+    if (numel() == 0 || ndim() == 0) { // old tensor is empty
+        // Empty and scalar tensors have no layout constraints;
+        ptrdiff_t stride = 1;
+        for (size_t dim = shape.size(); dim-- > 0;) {
+            new_strides[dim] = stride;
+            stride *= static_cast<ptrdiff_t>(shape[dim]);
+        }
+    } else { // old tensor is not empty
+        // Match each contiguous chunk of the old layout with dimensions in the view.
+        ptrdiff_t view_dim = static_cast<ptrdiff_t>(shape.size()) - 1;
+        // stride for each subspace in the chunk
+        ptrdiff_t chunk_base_stride = _meta.strides.back();
+        // numel in current chunk
+        size_t tensor_elements = 1;
+        size_t view_elements = 1;
+
+        for (ptrdiff_t tensor_dim = static_cast<ptrdiff_t>(ndim()) - 1; tensor_dim >= 0; --tensor_dim) { // ptrdiff_t is signed
+            tensor_elements *= _meta.shape[tensor_dim];
+            // 包含了tensor_dim == 0 或 stride == 1
+            const bool chunk_finished = tensor_dim == 0
+                                     || (_meta.shape[tensor_dim - 1] != 1
+                                         && _meta.strides[tensor_dim - 1] != static_cast<ptrdiff_t>(tensor_elements) * chunk_base_stride);
+
+            if (!chunk_finished) {
+                continue;
+            }
+
+            while (view_dim >= 0
+                   && (view_elements < tensor_elements || shape[view_dim] == 1)) {
+                new_strides[view_dim] = static_cast<ptrdiff_t>(view_elements) * chunk_base_stride;
+                view_elements *= shape[view_dim];
+                --view_dim;
+            }
+
+            CHECK_ARGUMENT(view_elements == tensor_elements,
+                           "view shape is incompatible with the tensor strides");
+
+            if (tensor_dim > 0) {
+                chunk_base_stride = _meta.strides[tensor_dim - 1];
+                tensor_elements = 1;
+                view_elements = 1;
+            }
+        }
+
+        CHECK_ARGUMENT(view_dim == -1, "view shape is incompatible with the tensor strides");
+    }
+
+    TensorMeta meta{dtype(), shape, std::move(new_strides)};
+    return std::shared_ptr<Tensor>(new Tensor(std::move(meta), _storage, _offset));
 }
 
-tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const { // only support slice_step = 1 and positive slicing
+    CHECK_ARGUMENT(dim < ndim(), "slice dimension is out of range");
+    CHECK_ARGUMENT(start <= end, "slice start must not be greater than end");
+    CHECK_ARGUMENT(end <= _meta.shape[dim], "slice end is out of range");
+    CHECK_ARGUMENT(_meta.strides[dim] >= 0, "negative strides are not supported");
+
+    TensorMeta meta = _meta;
+    meta.shape[dim] = end - start;
+    const size_t byte_offset = start * static_cast<size_t>(_meta.strides[dim]) * elementSize();
+
+    // Slicing advances the byte offset but keeps the original storage and strides.
+    return std::shared_ptr<Tensor>(new Tensor(std::move(meta), _storage, _offset + byte_offset));
 }
 
-void Tensor::load(const void *src_) {
-    TO_BE_IMPLEMENTED();
+void Tensor::load(const void *src) { // only tensor is continuous
+    CHECK_ARGUMENT(src != nullptr, "load source must not be null");
+    const size_t bytes = numel() * elementSize();
+
+    if (deviceType() == LLAISYS_DEVICE_CPU) {
+        std::memcpy(data(), src, bytes);
+    } else {
+        // The runtime API performs the host-to-device transfer on the tensor's device.
+        core::context().setDevice(deviceType(), deviceId());
+        core::context().runtime().api()->memcpy_sync(data(), src, bytes, LLAISYS_MEMCPY_H2D);
+    }
 }
 
 tensor_t Tensor::contiguous() const {
