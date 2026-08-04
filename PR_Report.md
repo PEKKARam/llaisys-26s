@@ -64,7 +64,7 @@ bool Tensor::isContiguous() const {
 
 根据参考资料，在内存中，只要满足 `strides[i-1] == shape[i] * strides[i]`，就说明第 `i-1` 维和第 `i` 维在内存中是连在一起的，它们可被归为同一个 Chunk。
 
-略微修改torck源码，加入创建tensor语句如下。
+略微修改torch源码，加入创建tensor语句如下。
 
 ```C++
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
