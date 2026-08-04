@@ -2,6 +2,16 @@
 
 作者：  [PEKKARam](https://github.com/PEKKARam)
 
+- [llaisys-26s 作业报告](#llaisys-26s-作业报告)
+  - [作业一 #1 张量](#作业一-1-张量)
+    - [任务-1.1 load](#任务-11-load)
+    - [任务-1.2 isContiguous](#任务-12-iscontiguous)
+    - [任务-1.3 view](#任务-13-view)
+    - [任务-1.4 permute](#任务-14-permute)
+    - [任务-1.5 slice](#任务-15-slice)
+    - [作业一参考资料](#作业一参考资料)
+
+
 ## 作业一 #1 张量
 
 ### 任务-1.1 load
@@ -24,8 +34,6 @@ void Tensor::load(const void *src) { // only tensor is continuous
 ### 任务-1.2 isContiguous
 
 按照张量各维度的逻辑顺序访问元素时，相邻元素在内存中也必须紧密排列，期望步长应该与实际步长相符合，否则不连续。
-
-[torch _geometry_is_contiguous](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/TensorGeometry.cpp)
 
 ```C++
 bool Tensor::isContiguous() const {
@@ -56,15 +64,11 @@ bool Tensor::isContiguous() const {
 
 分析：
 
-[torch.Tensor.view Doc](https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.view.html)
-
-[torch::aten computeStride_imlp](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/TensorUtils.cpp#L327)
-
 不能复制数据，只能修改`shape`和`strides`，如果新形状中的某个大维（由原张量的多个维度合并而成），在原始内存中不是连续排列的，就必须报错。
 
-根据参考资料，在内存中，只要满足 `strides[i-1] == shape[i] * strides[i]`，就说明第 `i-1` 维和第 `i` 维在内存中是连在一起的，它们可被归为同一个 Chunk。
+根据`torch.Tensor.view`的官方文档，在内存中，只要满足 `strides[i-1] == shape[i] * strides[i]`，就说明第 `i-1` 维和第 `i` 维在内存中是连在一起的，它们可被归为同一个 Chunk。
 
-略微修改torch源码，加入创建tensor语句如下。
+略微修改`torch computeStride_impl`源码，加入创建tensor语句如下。
 
 ```C++
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
@@ -128,8 +132,6 @@ tensor_t Tensor::view(const std::vector<size_t> &shape) const {
 
 ### 任务-1.4 permute
 
-[torch.Tensor.permute Doc](https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.permute.html)
-
 ```C++
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
     CHECK_ARGUMENT(order.size() == ndim(), "permute order must contain every dimension");
@@ -151,10 +153,6 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
 
 ### 任务-1.5 slice
 
-[torch slice](https://github.com/pytorch/pytorch/blob/84b65be2832fa711f2d5683019aae626dd334ea8/aten/src/ATen/native/TensorShape.cpp#L3007)
-
-[torch.select](https://docs.pytorch.org/docs/2.13/generated/torch.select.html)
-
 观察到定义的`tensor.hpp::slice()`函数不含有类似slice step参数，默认为`step == 1`，并为了简化只支持正向切片。
 
 ```C++
@@ -173,7 +171,14 @@ tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const { // only sup
 }
 ```
 
-## 参考资料
+### 作业一参考资料
 
 - [ezyang's blog: Pytorch Internals](https://blog.ezyang.com/2019/05/pytorch-internals/)
+- [torch _geometry_is_contiguous](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/TensorGeometry.cpp)
+- [torch.Tensor.view Doc](https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.view.html)
+- [torch computeStride_impl](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/TensorUtils.cpp#L327)
+- [torch.Tensor.permute Doc](https://docs.pytorch.org/docs/2.13/generated/torch.Tensor.permute.html)
+- [torch slice](https://github.com/pytorch/pytorch/blob/84b65be2832fa711f2d5683019aae626dd334ea8/aten/src/ATen/native/TensorShape.cpp#L3007)
+- [torch.select Doc](https://docs.pytorch.org/docs/2.13/generated/torch.select.html)
+
 
