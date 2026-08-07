@@ -10,6 +10,9 @@
     - [任务-1.4 permute](#任务-14-permute)
     - [任务-1.5 slice](#任务-15-slice)
     - [作业一参考资料](#作业一参考资料)
+  - [作业二 #2 算子](#作业二-2-算子)
+    - [任务-2.1 argmax](#任务-21-argmax)
+    - [任务-2.2](#任务-22)
 
 
 ## 作业一 #1 张量
@@ -181,4 +184,20 @@ tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const { // only sup
 - [torch slice](https://github.com/pytorch/pytorch/blob/84b65be2832fa711f2d5683019aae626dd334ea8/aten/src/ATen/native/TensorShape.cpp#L3007)
 - [torch.select Doc](https://docs.pytorch.org/docs/2.13/generated/torch.select.html)
 
+## 作业二 #2 算子
+
+### 任务-2.1 argmax
+
+结果见 [](/src/ops/argmax/)
+
+注意到 [](/test/ops/argmax.py#L30-L32) 中返回使用的是 `or`，已修改成`and`
+
+修改后
+```python
+assert check_equal(max_val_, max_val, strict=True) and check_equal(
+        max_idx_, max_idx, strict=True
+    )
+```
+
+### 任务-2.2 
 

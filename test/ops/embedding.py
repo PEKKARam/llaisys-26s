@@ -21,11 +21,12 @@ def test_op_embedding(
     print(f"   idx_shape {idx_shape} embd_shape {embd_shape} dtype <{dtype_name}>")
     embd, embd_ = random_tensor(embd_shape, dtype_name, device_name)
     idx, idx_ = random_int_tensor(idx_shape, device_name, high=embd_shape[0])
-    out, out_ = random_tensor((idx_shape[0], embd_shape[1]), dtype_name, device_name)
+    out_shape = (*idx_shape, embd_shape[1])
+    out, out_ = random_tensor(out_shape, dtype_name, device_name)
     torch_embedding(out, idx, embd)
     llaisys.Ops.embedding(out_, idx_, embd_)
 
-    check_equal(out_, out, strict=True)
+    assert check_equal(out_, out, strict=True)
 
     if profile:
         benchmark(
@@ -44,6 +45,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     testShapes = [
         ((1,), (2, 3)),
+        ((2, 3), (16, 8)),
         ((50,), (512, 4096)),
     ]
     testDtype = [
