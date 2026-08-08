@@ -2,6 +2,9 @@
 .xmake/
 build/
 
+# Models
+Models/
+
 # Binaries
 bin/
 lib/

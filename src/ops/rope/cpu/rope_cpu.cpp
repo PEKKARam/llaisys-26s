@@ -3,6 +3,7 @@
 #include "../../../utils.hpp"
 
 #include <cmath>
+#include <vector>
 
 namespace llaisys::ops::cpu {
 template <typename T>
@@ -16,21 +17,20 @@ void rope_(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
     const int64_t *positions = reinterpret_cast<const int64_t *>(pos_ids->data());
     T *output_data = reinterpret_cast<T *>(out->data());
 
-    std::vector<float> inv_freq(half);
+    std::vector<float> freq_base(half);
+    std::vector<float> sin_values(half);
+    std::vector<float> cos_values(half);
 
     for (size_t j = 0; j < half; ++j) {
-        float exp = float(-2.0f * j / D);
-        inv_freq[j] = pow(theta, exp);
+        const float exponent = 2.0f * static_cast<float>(j) / static_cast<float>(D);
+        freq_base[j] = std::pow(theta, exponent);
     }
 
     for (size_t seq = 0; seq < S; ++seq) {
-        float pos = static_cast<float>(positions[seq]);
-
-        std::vector<float> sin_values(half);
-        std::vector<float> cos_values(half);
+        const float pos = static_cast<float>(positions[seq]);
 
         for (size_t j = 0; j < half; ++j) {
-            float angle = pos * inv_freq[j];
+            const float angle = pos / freq_base[j];
 
             sin_values[j] = std::sin(angle);
             cos_values[j] = std::cos(angle);
@@ -49,9 +49,8 @@ void rope_(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
                 output_data[base + j] = llaisys::utils::cast<T>(rotated_a);
                 output_data[base + half + j] = llaisys::utils::cast<T>(rotated_b);
             }
-        } // end head-loop
-    } // end seq-loop
-
+        }
+    }
 }
 
 void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
@@ -62,7 +61,8 @@ void rope(tensor_t out, tensor_t in, tensor_t pos_ids, float theta) {
         return rope_<llaisys::bf16_t>(out, in, pos_ids, theta);
     case LLAISYS_DTYPE_F16:
         return rope_<llaisys::fp16_t>(out, in, pos_ids, theta);
-        default : EXCEPTION_UNSUPPORTED_DATATYPE(in->dtype());
+    default:
+        EXCEPTION_UNSUPPORTED_DATATYPE(in->dtype());
     }
-    }
+}
 } // namespace llaisys::ops::cpu
