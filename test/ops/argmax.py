@@ -5,7 +5,14 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import random_tensor, check_equal, benchmark, zero_tensor
+from test_utils import (
+    add_benchmark_arguments,
+    benchmark,
+    benchmark_kwargs,
+    check_equal,
+    random_tensor,
+    zero_tensor,
+)
 
 
 def torch_argmax(max_idx, max_val, vals):
@@ -36,6 +43,10 @@ def test_op_argmax(
             lambda: torch_argmax(max_idx, max_val, vals),
             lambda: llaisys.Ops.argmax(max_idx_, max_val_, vals_),
             device_name,
+            op="argmax",
+            shape=shape,
+            dtype=dtype_name,
+            **(profile if isinstance(profile, dict) else {}),
         )
 
 
@@ -44,13 +55,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
-    parser.add_argument("--profile", action="store_true")
+    add_benchmark_arguments(parser)
     args = parser.parse_args()
+    profile = benchmark_kwargs(args)
     testShapes = [(4,), (2, 3, 4), (4096,)]
     testDtype = ["f32", "f16", "bf16"]
     print(f"Testing Ops.argmax on {args.device}")
     for shape in testShapes:
         for dtype_name in testDtype:
-            test_op_argmax(shape, dtype_name, args.device, args.profile)
+            test_op_argmax(shape, dtype_name, args.device, profile)
 
     print("\033[92mTest passed!\033[0m\n")

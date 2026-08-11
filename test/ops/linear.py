@@ -5,7 +5,13 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import random_tensor, check_equal, benchmark
+from test_utils import (
+    add_benchmark_arguments,
+    benchmark,
+    benchmark_kwargs,
+    check_equal,
+    random_tensor,
+)
 
 
 def torch_linear(out, x, w, bias):
@@ -42,6 +48,11 @@ def test_op_linear(
             lambda: torch_linear(out, x, w, bias),
             lambda: llaisys.Ops.linear(out_, x_, w_, bias_),
             device_name,
+            op="linear",
+            shape={"input": x_shape, "weight": w_shape, "output": out_shape},
+            dtype=dtype_name,
+            metadata={"bias": use_bias},
+            **(profile if isinstance(profile, dict) else {}),
         )
 
 
@@ -50,8 +61,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
-    parser.add_argument("--profile", action="store_true")
+    add_benchmark_arguments(parser)
     args = parser.parse_args()
+    profile = benchmark_kwargs(args)
     testShapes = [
         ((2, 3), (2, 4), (3, 4), True),
         ((512, 4096), (512, 4096), (4096, 4096), True),
@@ -65,6 +77,6 @@ if __name__ == "__main__":
     print(f"Testing Ops.linear on {args.device}")
     for shapes in testShapes:
         for dtype_name, atol, rtol in testDtypePrec:
-            test_op_linear(*shapes, dtype_name, atol, rtol, args.device, args.profile)
+            test_op_linear(*shapes, dtype_name, atol, rtol, args.device, profile)
 
     print("\033[92mTest passed!\033[0m\n")

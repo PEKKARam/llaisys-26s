@@ -5,7 +5,13 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import random_tensor, check_equal, benchmark
+from test_utils import (
+    add_benchmark_arguments,
+    benchmark,
+    benchmark_kwargs,
+    check_equal,
+    random_tensor,
+)
 
 
 def torch_self_attention(attn_val, query, key, value, scale):
@@ -58,6 +64,11 @@ def test_op_self_attention(
             lambda: torch_self_attention(attn_val, q, k, v, scale),
             lambda: llaisys.Ops.self_attention(attn_val_, q_, k_, v_, scale),
             device_name,
+            op="self_attention",
+            shape={"qlen": qlen, "kvlen": kvlen, "nh": nh, "nkvh": nkvh, "hd": hd},
+            dtype=dtype_name,
+            metadata={"scale": scale},
+            **(profile if isinstance(profile, dict) else {}),
         )
 
 
@@ -66,8 +77,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
-    parser.add_argument("--profile", action="store_true")
+    add_benchmark_arguments(parser)
     args = parser.parse_args()
+    profile = benchmark_kwargs(args)
     testShapes = [
         # qlen, kvlen, nh, nkvh, hd
         (2, 2, 1, 1, 4),
@@ -83,7 +95,7 @@ if __name__ == "__main__":
     for shape in testShapes:
         for dtype_name, atol, rtol in testDtypePrec:
             test_op_self_attention(
-                *shape, dtype_name, atol, rtol, args.device, args.profile
+                *shape, dtype_name, atol, rtol, args.device, profile
             )
 
     print("\033[92mTest passed!\033[0m\n")

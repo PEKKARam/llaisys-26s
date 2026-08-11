@@ -31,6 +31,10 @@ cache/
 # JSON
 *.json
 
+# Benchmark outputs
+benchmark/results/*
+!benchmark/results/.gitkeep
+
 #GGUF
 *.gguf
 

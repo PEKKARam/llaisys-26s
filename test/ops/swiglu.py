@@ -5,7 +5,13 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import random_tensor, check_equal, benchmark
+from test_utils import (
+    add_benchmark_arguments,
+    benchmark,
+    benchmark_kwargs,
+    check_equal,
+    random_tensor,
+)
 
 
 def torch_swiglu(out, gate, up):
@@ -35,6 +41,10 @@ def test_op_swiglu(
             lambda: torch_swiglu(out, gate, up),
             lambda: llaisys.Ops.swiglu(out_, gate_, up_),
             device_name,
+            op="swiglu",
+            shape=shape,
+            dtype=dtype_name,
+            **(profile if isinstance(profile, dict) else {}),
         )
 
 
@@ -43,8 +53,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
-    parser.add_argument("--profile", action="store_true")
+    add_benchmark_arguments(parser)
     args = parser.parse_args()
+    profile = benchmark_kwargs(args)
     testShapes = [(2, 3), (512, 4096)]
     testDtypePrec = [
         # type, atol, rtol
@@ -55,6 +66,6 @@ if __name__ == "__main__":
     print(f"Testing Ops.swiglu on {args.device}")
     for shape in testShapes:
         for dtype_name, atol, rtol in testDtypePrec:
-            test_op_swiglu(shape, dtype_name, atol, rtol, args.device, args.profile)
+            test_op_swiglu(shape, dtype_name, atol, rtol, args.device, profile)
 
     print("\033[92mTest passed!\033[0m\n")

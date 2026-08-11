@@ -4,7 +4,14 @@ import os
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
-from test_utils import random_int_tensor, random_tensor, check_equal, benchmark
+from test_utils import (
+    add_benchmark_arguments,
+    benchmark,
+    benchmark_kwargs,
+    check_equal,
+    random_int_tensor,
+    random_tensor,
+)
 
 
 def torch_embedding(out, idx, embd):
@@ -33,6 +40,10 @@ def test_op_embedding(
             lambda: torch_embedding(out, idx, embd),
             lambda: llaisys.Ops.embedding(out_, idx_, embd_),
             device_name,
+            op="embedding",
+            shape={"index": idx_shape, "weight": embd_shape, "output": out_shape},
+            dtype=dtype_name,
+            **(profile if isinstance(profile, dict) else {}),
         )
 
 
@@ -41,8 +52,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
-    parser.add_argument("--profile", action="store_true")
+    add_benchmark_arguments(parser)
     args = parser.parse_args()
+    profile = benchmark_kwargs(args)
     testShapes = [
         ((1,), (2, 3)),
         ((2, 3), (16, 8)),
@@ -58,7 +70,7 @@ if __name__ == "__main__":
     for idx_shape, embd_shape in testShapes:
         for dtype_name in testDtype:
             test_op_embedding(
-                idx_shape, embd_shape, dtype_name, args.device, args.profile
+                idx_shape, embd_shape, dtype_name, args.device, profile
             )
 
     print("\033[92mTest passed!\033[0m\n")

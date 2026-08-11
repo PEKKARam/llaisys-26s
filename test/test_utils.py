@@ -1,3 +1,11 @@
+import json
+import platform
+import statistics
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
 import llaisys
 import torch
 
@@ -160,27 +168,179 @@ def check_equal(
     return False
 
 
-def benchmark(torch_func, llaisys_func, device_name, warmup=10, repeat=100):
+def _percentile(values, percentile):
+    if not values:
+        raise ValueError("Cannot calculate a percentile from no samples")
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * percentile / 100
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = rank - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def _git_revision():
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _json_value(value):
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    return value
+
+
+def _device_description(device_name, device_id):
+    if device_name == "nvidia" and torch.cuda.is_available():
+        return torch.cuda.get_device_name(device_id)
+    return platform.processor() or platform.machine()
+
+
+def _summarize_samples(samples_ms):
+    return {
+        "mean_ms": statistics.fmean(samples_ms),
+        "median_ms": statistics.median(samples_ms),
+        "p90_ms": _percentile(samples_ms, 90),
+        "p99_ms": _percentile(samples_ms, 99),
+        "min_ms": min(samples_ms),
+        "max_ms": max(samples_ms),
+    }
+
+
+def _append_jsonl(path, records):
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("a", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def benchmark(
+    torch_func,
+    llaisys_func,
+    device_name,
+    warmup=10,
+    repeat=100,
+    *,
+    op="unknown",
+    shape=None,
+    dtype=None,
+    device_id=0,
+    json_path=None,
+    metadata=None,
+):
+    """Benchmark pre-created operator calls and return structured records.
+
+    CUDA calls are measured with events. CPU calls use perf_counter. Input and
+    output allocation must happen before calling this function.
+    """
+    if warmup < 0:
+        raise ValueError("warmup must be non-negative")
+    if repeat <= 0:
+        raise ValueError("repeat must be positive")
+
     api = llaisys.RuntimeAPI(llaisys_device(device_name))
+    api.set_device(device_id)
+    use_cuda_events = device_name == "nvidia"
+    if use_cuda_events and not torch.cuda.is_available():
+        raise RuntimeError("CUDA event timing requested, but PyTorch cannot access CUDA")
 
     def time_op(func):
-        import time
-
         for _ in range(warmup):
             func()
         api.device_synchronize()
-        start = time.time()
-        for _ in range(repeat):
-            func()
-        api.device_synchronize()
-        end = time.time()
-        return (end - start) / repeat
 
-    torch_time = time_op(torch_func)
-    llaisys_time = time_op(llaisys_func)
-    print(
-        f"        Torch time: {torch_time*1000:.5f} ms \n        LLAISYS time: {llaisys_time*1000:.5f} ms"
+        samples_ms = []
+        for _ in range(repeat):
+            if use_cuda_events:
+                start = torch.cuda.Event(enable_timing=True)
+                stop = torch.cuda.Event(enable_timing=True)
+                start.record()
+                func()
+                stop.record()
+                api.device_synchronize()
+                samples_ms.append(start.elapsed_time(stop))
+            else:
+                start = time.perf_counter()
+                func()
+                end = time.perf_counter()
+                samples_ms.append((end - start) * 1000)
+        return samples_ms
+
+    common = {
+        "schema_version": 1,
+        "benchmark": "operator",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_revision": _git_revision(),
+        "op": op,
+        "shape": _json_value(shape),
+        "dtype": dtype,
+        "device": device_name,
+        "device_id": device_id,
+        "device_name": _device_description(device_name, device_id),
+        "python_version": platform.python_version(),
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "warmup": warmup,
+        "repeat": repeat,
+        "timer": "cuda_event" if use_cuda_events else "perf_counter",
+    }
+    if metadata:
+        common.update(_json_value(metadata))
+
+    records = {}
+    for implementation, func in (("torch", torch_func), ("llaisys", llaisys_func)):
+        samples_ms = time_op(func)
+        record = {**common, "implementation": implementation}
+        record.update(_summarize_samples(samples_ms))
+        records[implementation] = record
+        print(
+            f"        {implementation.upper():7s} "
+            f"mean={record['mean_ms']:.5f} ms "
+            f"median={record['median_ms']:.5f} ms "
+            f"p90={record['p90_ms']:.5f} ms "
+            f"p99={record['p99_ms']:.5f} ms"
+        )
+
+    if json_path:
+        _append_jsonl(json_path, records.values())
+    return records
+
+
+def add_benchmark_arguments(parser):
+    parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--warmup", default=10, type=int)
+    parser.add_argument("--repeat", default=100, type=int)
+    parser.add_argument(
+        "--json",
+        dest="json_path",
+        default=None,
+        help="Append benchmark records to this JSONL file",
     )
+
+
+def benchmark_kwargs(args):
+    if not args.profile:
+        return False
+    return {
+        "warmup": args.warmup,
+        "repeat": args.repeat,
+        "json_path": args.json_path,
+    }
 
 
 def torch_device(device_name: str, device_id=0):

@@ -5,7 +5,14 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, parent_dir)
 import llaisys
 import torch
-from test_utils import arrange_tensor, random_tensor, check_equal, benchmark
+from test_utils import (
+    add_benchmark_arguments,
+    arrange_tensor,
+    benchmark,
+    benchmark_kwargs,
+    check_equal,
+    random_tensor,
+)
 
 
 def torch_rope(y: torch.Tensor, x: torch.Tensor, pos_ids: torch.Tensor, theta: float):
@@ -56,6 +63,11 @@ def test_op_rope(
             lambda: torch_rope(y, x, pos_ids, theta),
             lambda: llaisys.Ops.rope(y_, x_, pos_ids_, theta),
             device_name,
+            op="rope",
+            shape=shape,
+            dtype=dtype_name,
+            metadata={"position_range": start_end, "theta": theta},
+            **(profile if isinstance(profile, dict) else {}),
         )
 
 
@@ -64,8 +76,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=["cpu", "nvidia"], type=str)
-    parser.add_argument("--profile", action="store_true")
+    add_benchmark_arguments(parser)
     args = parser.parse_args()
+    profile = benchmark_kwargs(args)
     testShapes = [
         ((2, 1, 4), (0, 2)), 
         ((512, 4, 4096), (512, 1024))]
@@ -78,6 +91,6 @@ if __name__ == "__main__":
     print(f"Testing Ops.rope on {args.device}")
     for shape, start_end in testShapes:
         for dtype_name, atol, rtol in testDtypePrec:
-            test_op_rope(shape, start_end, dtype_name, atol, rtol, args.device, args.profile)
+            test_op_rope(shape, start_end, dtype_name, atol, rtol, args.device, profile)
 
     print("\033[92mTest passed!\033[0m\n")

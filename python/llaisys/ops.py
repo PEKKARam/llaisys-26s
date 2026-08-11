@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .libllaisys import LIB_LLAISYS
 from .tensor import Tensor
 from ctypes import c_float, c_int
@@ -19,7 +21,7 @@ class Ops:
         )
 
     @staticmethod
-    def linear(out: Tensor, inp: Tensor, weight: Tensor, bias: Tensor):
+    def linear(out: Tensor, inp: Tensor, weight: Tensor, bias: Optional[Tensor]):
         LIB_LLAISYS.llaisysLinear(
             out.lib_tensor(),
             inp.lib_tensor(),

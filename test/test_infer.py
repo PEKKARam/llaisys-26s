@@ -51,7 +51,7 @@ def hf_infer(
             temperature=temperature,
         )
     result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return outputs[0].tolist(), result
+    return outputs[0].tolist(), result, inputs.shape[-1]
 
 
 def load_llaisys_model(model_path, device_name):
@@ -76,7 +76,23 @@ def llaisys_infer(
         temperature=temperature,
     )
 
-    return outputs, tokenizer.decode(outputs, skip_special_tokens=True)
+    return outputs, tokenizer.decode(outputs, skip_special_tokens=True), len(inputs)
+
+
+def synchronize(device_name):
+    if device_name == "nvidia":
+        torch.cuda.synchronize()
+
+
+def print_timing(name, load_seconds, infer_seconds, prompt_tokens, total_tokens):
+    output_tokens = max(0, total_tokens - prompt_tokens)
+    tokens_per_second = output_tokens / infer_seconds if infer_seconds > 0 else 0.0
+    print(f"{name} load: {load_seconds * 1000:.2f} ms")
+    print(f"{name} end-to-end: {infer_seconds * 1000:.2f} ms")
+    print(
+        f"{name} tokens: prompt={prompt_tokens}, output={output_tokens}, "
+        f"throughput={tokens_per_second:.3f} output tok/s\n"
+    )
 
 
 if __name__ == "__main__":
@@ -92,15 +108,27 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    llaisys_runtime = llaisys.RuntimeAPI(llaisys_device(args.device))
+    if llaisys_runtime.get_device_count() < 1:
+        raise SystemExit(
+            f"No LLAISYS {args.device} device is available; build and install the "
+            "requested backend before running inference tests"
+        )
+    llaisys_runtime.set_device(0)
+
     top_p, top_k, temperature = args.top_p, args.top_k, args.temperature
     if args.test:
         top_p, top_k, temperature = 1.0, 1, 1.0
 
+    load_start = time.perf_counter()
     tokenizer, model, model_path = load_hf_model(args.model, args.device)
+    synchronize(args.device)
+    hf_load_seconds = time.perf_counter() - load_start
 
     # Example prompt
-    start_time = time.time()
-    tokens, output = hf_infer(
+    synchronize(args.device)
+    start_time = time.perf_counter()
+    tokens, output, hf_prompt_tokens = hf_infer(
         args.prompt,
         tokenizer,
         model,
@@ -109,7 +137,8 @@ if __name__ == "__main__":
         top_k=top_k,
         temperature=temperature,
     )
-    end_time = time.time()
+    synchronize(args.device)
+    hf_infer_seconds = time.perf_counter() - start_time
 
     del model
     gc.collect()
@@ -120,11 +149,20 @@ if __name__ == "__main__":
     print("\nContents:")
     print(output)
     print("\n")
-    print(f"Time elapsed: {(end_time - start_time):.2f}s\n")
+    print_timing(
+        "Hugging Face",
+        hf_load_seconds,
+        hf_infer_seconds,
+        hf_prompt_tokens,
+        len(tokens),
+    )
 
+    load_start = time.perf_counter()
     model = load_llaisys_model(model_path, args.device)
-    start_time = time.time()
-    llaisys_tokens, llaisys_output = llaisys_infer(
+    llaisys_runtime.device_synchronize()
+    llaisys_load_seconds = time.perf_counter() - load_start
+    start_time = time.perf_counter()
+    llaisys_tokens, llaisys_output, llaisys_prompt_tokens = llaisys_infer(
         args.prompt,
         tokenizer,
         model,
@@ -134,7 +172,8 @@ if __name__ == "__main__":
         temperature=temperature,
     )
 
-    end_time = time.time()
+    llaisys_runtime.device_synchronize()
+    llaisys_infer_seconds = time.perf_counter() - start_time
 
     print("\n=== Your Result ===\n")
     print("Tokens:")
@@ -142,7 +181,13 @@ if __name__ == "__main__":
     print("\nContents:")
     print(llaisys_output)
     print("\n")
-    print(f"Time elapsed: {(end_time - start_time):.2f}s\n")
+    print_timing(
+        "LLAISYS",
+        llaisys_load_seconds,
+        llaisys_infer_seconds,
+        llaisys_prompt_tokens,
+        len(llaisys_tokens),
+    )
 
     if args.test:
         assert llaisys_tokens == tokens
