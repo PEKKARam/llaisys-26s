@@ -215,17 +215,20 @@ class Qwen2:
 
     def _read_i64_scalar(self, tensor: Tensor) -> int:
         if self.device == DeviceType.CPU:
-            ptr = tensor.data_ptr().value
+            raw_ptr = tensor.data_ptr()
+            ptr = raw_ptr if isinstance(raw_ptr, int) else raw_ptr.value
             if ptr is None:
                 raise RuntimeError("Tensor data pointer is null")
             return int(ctypes.c_int64.from_address(ptr).value)
 
-        host_tensor = self._make_tensor((1,), DataType.I64)
-        self.runtime.memcpy_sync(host_tensor.data_ptr(), tensor.data_ptr(), 8, MemcpyKind.D2H)
-        ptr = host_tensor.data_ptr().value
-        if ptr is None:
-            raise RuntimeError("Host tensor data pointer is null")
-        return int(ctypes.c_int64.from_address(ptr).value)
+        host_value = ctypes.c_int64()
+        self.runtime.memcpy_sync(
+            ctypes.byref(host_value),
+            tensor.data_ptr(),
+            ctypes.sizeof(host_value),
+            MemcpyKind.D2H,
+        )
+        return int(host_value.value)
 
     def _require_weight(self, tensor: Tensor | None, name: str) -> Tensor:
         if tensor is None:

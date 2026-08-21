@@ -4,6 +4,7 @@ build/
 
 # Models
 Models/
+DeepSeek-R1-Distill-Qwen-1.5B/
 
 # Binaries
 bin/
