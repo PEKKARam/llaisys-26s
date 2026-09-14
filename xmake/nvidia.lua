@@ -1,0 +1,7 @@
+target("llaisys-device-nvidia")
+    set_kind("static")
+    set_languages("cxx17")
+    add_files("../src/device/nvidia/*.cu")
+    add_cuflags("-std=c++17", "-Xcompiler=-fPIC", "-rdc=false", {force = true})
+    on_install(function (target) end)
+target_end()

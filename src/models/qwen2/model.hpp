@@ -34,8 +34,14 @@ private:
     std::vector<llaisysTensor_t> _mlp_up_w;
     std::vector<llaisysTensor_t> _mlp_down_w;
 
+    // Per-layer KV cache.  The cache lives on the same device as the model
+    // and is addressed as [maxseq, num_kv_heads, head_dim].
+    std::vector<llaisys::tensor_t> _k_cache;
+    std::vector<llaisys::tensor_t> _v_cache;
+
     llaisysTensor_t createTensor(const std::vector<size_t> &shape);
     void allocateWeights();
+    void allocateCache();
     void exposeWeightArrays();
 
 public:

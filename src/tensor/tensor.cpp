@@ -283,18 +283,56 @@ void Tensor::load(const void *src) { // only tensor is continuous
 }
 
 tensor_t Tensor::contiguous() const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    if (isContiguous()) {
+        return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
+    }
+    auto result = create(shape(), dtype(), deviceType(), deviceId());
+    // Generic strided-to-contiguous copy.  We intentionally keep the
+    // implementation simple and explicit: this is also the reference
+    // behavior that future device kernels must match.
+    const size_t item = elementSize();
+    std::vector<size_t> index(ndim(), 0);
+    for (size_t linear = 0; linear < numel(); ++linear) {
+        size_t rem = linear;
+        ptrdiff_t src_elem = 0;
+        for (size_t d = ndim(); d-- > 0;) {
+            index[d] = rem % shape()[d]; rem /= shape()[d];
+            src_elem += static_cast<ptrdiff_t>(index[d]) * strides()[d];
+        }
+        // Device pointers cannot be dereferenced by the host.  A strided
+        // device copy requires a kernel; fail loudly until one is available.
+        CHECK_ARGUMENT(deviceType() == LLAISYS_DEVICE_CPU,
+                       "contiguous conversion of a device view is not supported yet");
+        std::memcpy(result->data() + linear * item, data() + src_elem * item, item);
+    }
+    return result;
 }
 
 tensor_t Tensor::reshape(const std::vector<size_t> &shape) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    if (isContiguous()) return view(shape);
+    return contiguous()->view(shape);
 }
 
 tensor_t Tensor::to(llaisysDeviceType_t device_type, int device) const {
-    TO_BE_IMPLEMENTED();
-    return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+    if (device < 0) device = (device_type == deviceType()) ? deviceId() : 0;
+    auto result = create(shape(), dtype(), device_type, device);
+    const auto bytes = numel() * elementSize();
+    if (isContiguous()) {
+        auto kind = deviceType() == LLAISYS_DEVICE_CPU && device_type != LLAISYS_DEVICE_CPU
+                        ? LLAISYS_MEMCPY_H2D
+                        : (deviceType() != LLAISYS_DEVICE_CPU && device_type == LLAISYS_DEVICE_CPU
+                               ? LLAISYS_MEMCPY_D2H : LLAISYS_MEMCPY_D2D);
+        // CUDA-style APIs must be selected from the non-CPU side for a
+        // host/device transfer.  Selecting the destination CPU runtime for
+        // D2H would reduce the operation to an invalid host memcpy.
+        const auto api_device = device_type == LLAISYS_DEVICE_CPU ? deviceType() : device_type;
+        const int api_id = device_type == LLAISYS_DEVICE_CPU ? deviceId() : device;
+        core::context().setDevice(api_device, api_id);
+        core::context().runtime().api()->memcpy_sync(result->data(), data(), bytes, kind);
+    } else {
+        return contiguous()->to(device_type, device);
+    }
+    return result;
 }
 
 } // namespace llaisys

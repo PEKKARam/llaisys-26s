@@ -121,8 +121,19 @@ target("llaisys")
     add_deps("llaisys-models")
 
     set_languages("cxx17")
+    if has_config("nv-gpu") then
+        add_ldflags("-Wl,-z,notext")
+    end
     set_warnings("all", "error")
     add_files("src/llaisys/*.cc", "src/llaisys/models/*.cc")
+    if has_config("nv-gpu") then
+        -- Compile CUDA translation units into the shared target so nvcc emits
+        -- the registration stubs required by the CUDA runtime.
+        add_files("src/ops/nvidia_ops.cu", "src/device/nvidia/*.cu")
+        add_cuflags("-std=c++17", "-Xcompiler=-fPIC", {force = true})
+        add_ldflags("-Wl,-z,notext")
+        add_links("cudadevrt", "cudart_static")
+    end
     set_installdir(".")
 
     

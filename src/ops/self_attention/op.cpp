@@ -4,6 +4,9 @@
 #include "../../utils.hpp"
 
 #include "cpu/self_atten_cpu.hpp"
+#ifdef ENABLE_NVIDIA_API
+#include "../nvidia_ops.cuh"
+#endif
 
 #include <cmath>
 
@@ -41,8 +44,7 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
         return cpu::self_atten(attn_val, q, k, v, scale);
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::self_attention(attn_val, q, k, v, scale);
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;
