@@ -1,9 +1,7 @@
 # 作业 3 与作业 4 实施指南
 
-> 状态说明（2026-08-11）：本文的“当前仓库状态与缺口”基于较早的空骨架，
-> 其中关于 `qwen2.py` 尚未实现的描述已经过时。当前 Python 文件已有完整前向原型，
-> 但核心推理仍未迁移到 README 要求的 C/C++ 后端。最新审查、代码导读和可执行迁移
-> 计划见 [`ASSIGNMENT_3_LEARNING_PLAN_ZH.md`](ASSIGNMENT_3_LEARNING_PLAN_ZH.md)。
+> 状态说明（2026-09-14）：本文保留作业要求和验收清单；早期“尚未实现”的状态描述已按当前代码更新。
+> 面向学习和代码导读的主文档见 [`ASSIGNMENT_3学习路线与Qwen2实现导读.md`](ASSIGNMENT_3学习路线与Qwen2实现导读.md)。
 
 本文根据 `README_ZN.md`、当前代码骨架和测试脚本整理。它既是开发任务清单，也可以作为最终 PR 复现报告的底稿。
 
@@ -46,31 +44,22 @@
 
 ### 已有基础
 
-- CPU Tensor、Runtime 和主要算子已经存在。
-- Qwen2 的公共 C API 原型和权重结构已在 `include/llaisys/models/qwen2.h` 中定义。
-- `python/llaisys/models/qwen2.py` 已提供 safetensors 遍历骨架。
-- `test/test_infer.py` 已实现 Hugging Face 参考输出与 LLAISYS 输出的比较。
-- NVIDIA Runtime 源文件已存在，但函数体全部是 `TO_BE_IMPLEMENTED()`。
-- 各算子的 `op.cpp` 已预留 `ENABLE_NVIDIA_API` 分支，但都没有 NVIDIA 实现。
-- `xmake.lua` 已提供 `--nv-gpu` 选项，但引用的 `xmake/nvidia.lua` 尚不存在。
+- CPU Tensor、Runtime 和主要算子已经存在并通过原生测试。
+- Qwen2 C API、C++ 模型对象、权重槽位、KV Cache 和完整前向已经实现。
+- Python 已完成 config/safetensors 读取、权重映射、ctypes 调用和 argmax 生成循环。
+- NVIDIA Runtime、CUDA 算子和 `--nv-gpu` 构建路径已经接入；本地 NVIDIA 端到端 token 对齐已验证。
 
 ### 作业 3 主要缺口
 
-- `python/llaisys/models/qwen2.py` 的构造、权重加载和 `generate()` 均未实现。
-- `python/llaisys/libllaisys/` 中没有 Qwen2 的 ctypes 声明和加载逻辑。
-- `src/llaisys/` 中没有 Qwen2 C API 实现。
-- `src/models/` 或等价目录中没有 Qwen2 模型对象、Transformer Block、前向计算和 KV Cache。
-- 模型构建规则尚未加入 `xmake.lua`。
-- `src/ops/rearrange/op.cpp` 仍未实现；若模型依赖非连续视图转连续布局，需要先补齐。
+- 需要补充更系统的 CPU 真实模型验收、中间 Tensor 对齐和长序列边界测试。
+- 需要区分并记录 prefill/decode 性能，当前 CPU 实现仍是教学型朴素算子。
+- 需要进一步清理 Python 参考辅助路径，并完善 C API 错误处理语义。
 
 ### 作业 4 主要缺口
 
-- `src/device/nvidia/nvidia_runtime_api.cu` 的 12 个 Runtime 函数均未实现。
-- 该文件的 `memcpyAsync` 当前签名还缺少 `llaisysStream_t stream` 参数，与 `LlaisysRuntimeAPI` 函数指针类型不一致，需要修正。
-- `xmake/nvidia.lua` 不存在，CUDA 源文件、CUDA Toolkit 和加速库尚未接入构建。
-- `add`、`argmax`、`embedding`、`linear`、`rms_norm`、`rope`、`self_attention`、`swiglu` 的 NVIDIA 分支均未实现。
-- 第二个 GPU 平台目前没有设备枚举、宏、Runtime、构建规则或算子目录。
-- Python 的 `DeviceType`、测试工具和命令行 `choices` 需要增加第二个平台。
+- 当前只支持 CPU 和 NVIDIA；课程要求的第二个 GPU/CUDA 类平台尚未适配。
+- CUDA 算子目前主要是正确性基线，linear/attention 仍需使用专用库和 kernel 做性能优化。
+- 需要修正并固化 GPU self-attention 测试脚本的参考 mask 设备问题。
 
 ## 3. 推荐实施顺序
 
