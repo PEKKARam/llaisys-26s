@@ -1,5 +1,9 @@
 # Profiling
 
+For a first operator trace, how to read it, and current measurement limitations, see the
+[learning plan](../LEARNING_PLAN.md). The native backend currently has no NVTX phase
+markers; tracing `nvtx` does not add them automatically.
+
 Benchmark outside profilers first. Profiler overhead changes timing, so Nsight output is for
 diagnosis rather than performance baselines.
 

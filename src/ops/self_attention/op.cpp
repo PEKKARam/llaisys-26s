@@ -5,7 +5,7 @@
 
 #include "cpu/self_atten_cpu.hpp"
 #ifdef ENABLE_NVIDIA_API
-#include "../nvidia_ops.cuh"
+#include "nvidia/self_attention_nvidia.cuh"
 #endif
 
 #include <cmath>

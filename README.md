@@ -5,6 +5,12 @@
 <a href="README_ZN.md" target="README_ZN.md">中文</a>
 </p>
 
+## Learning this implementation
+
+Start with the [beginner learning and career plan (中文)](LEARNING_PLAN.md) for the current code map, assignment 3/4 explanations, math-to-code exercises, testing/profiling guidance, and verified limitations. The assignment text below is preserved as the original specification.
+
+This implementation targets a CPU reference backend and single-GPU NVIDIA CUDA inference. Additional GPU platforms are outside the project scope. CUDA operators live in `src/ops/<operator>/nvidia/`, alongside their `cpu/` implementations.
+
 ## Introduction
 
 LLAISYS (Let's Learn AI SYStem) is an educational project that aims to provide a platform for new and future AI engineers to learn how to build AI systems from scratch. LLAISYS consists of assignments that help students learn and build the basic modules, followed by a project stage in which qualified students contribute to the InfiniLM inference engine. LLAISYS uses C++ as primary programming language for system backend, and is compiled into shared libraries exposing C language APIs. Frontend codes are written in Python which calls these APIs to provide more convenient testing and interaction with other architectures such as PyTorch.

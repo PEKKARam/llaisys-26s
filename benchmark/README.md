@@ -1,5 +1,10 @@
 # Benchmark
 
+See the [learning plan](../LEARNING_PLAN.md) for the current implementation audit and
+the proposed measurement improvements. Existing inference timings estimate TPOT from
+two independent generations; they are not direct decode measurements. CUDA event timing
+also assumes compatible streams between PyTorch and the native backend.
+
 Correctness tests and performance measurements are deliberately separate. Every operator
 script checks its output against PyTorch before recording timings. JSONL files are appended
 so that results from separate shapes and commits can be compared later.

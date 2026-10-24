@@ -5,7 +5,7 @@
 
 #include "cpu/argmax_cpu.hpp"
 #ifdef ENABLE_NVIDIA_API
-#include "../nvidia_ops.cuh"
+#include "nvidia/argmax_nvidia.cuh"
 #endif
 
 namespace llaisys::ops {

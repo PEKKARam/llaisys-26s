@@ -5,6 +5,12 @@
 <a href="README_ZN.md" target="README_ZN.md">中文</a>
 </p>
 
+## 当前实现的学习入口
+
+从[学习与求职方案](LEARNING_PLAN.md)开始：包含当前代码地图、作业 3/4 的通俗解释、公式到代码的小练习、测试与性能分析建议，以及本次验证的范围。下方保留原始作业要求。
+
+当前个人项目范围为 CPU 参考后端与 NVIDIA CUDA 单卡推理；不计划其他 GPU 平台适配。CUDA 算子已按 `src/ops/<算子>/nvidia/` 拆分，与 `cpu/` 并列。
+
 ## 简介
 
 LLAISYS（Let's Learn AI SYStem）是一个教育项目，旨在为新手和未来的 AI 工程师提供一个从零开始构建 AI 系统的学习平台。LLAISYS 包含多个帮助学生学习和构建基础模块的作业，以及面向通过考核并获准晋级学员的项目阶段。LLAISYS使用C++作为系统后端的主要编程语言，并编译成共享库，提供C语言API。前端代码使用Python编写，调用这些API以提供更便捷的测试和与其他架构（如PyTorch）的交互。

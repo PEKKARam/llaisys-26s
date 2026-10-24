@@ -5,7 +5,7 @@
 
 #include "cpu/rope_cpu.hpp"
 #ifdef ENABLE_NVIDIA_API
-#include "../nvidia_ops.cuh"
+#include "nvidia/rope_nvidia.cuh"
 #endif
 
 namespace llaisys::ops {

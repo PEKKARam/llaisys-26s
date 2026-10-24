@@ -136,7 +136,6 @@ int64_t Model::infer(const int64_t *token_ids, size_t ntoken) {
     CHECK_ARGUMENT(token_ids != nullptr, "Qwen2 token IDs must not be null");
     CHECK_ARGUMENT(ntoken > 0, "Qwen2 inference requires at least one token");
     CHECK_ARGUMENT(ntoken <= _meta.maxseq - _cached_len, "Qwen2 inference exceeds maximum sequence length");
-    CHECK_ARGUMENT(ntoken <= _meta.maxseq - _cached_len, "Qwen2 inference exceeds maximum sequence length");
 
     auto wrap = [](llaisysTensor_t handle) -> tensor_t {
         CHECK_ARGUMENT(handle != nullptr, "Qwen2 weight handle is null");

@@ -5,7 +5,7 @@
 
 #include "cpu/add_cpu.hpp"
 #ifdef ENABLE_NVIDIA_API
-#include "../nvidia_ops.cuh"
+#include "nvidia/add_nvidia.cuh"
 #endif
 
 namespace llaisys::ops {

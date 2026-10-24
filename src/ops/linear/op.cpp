@@ -5,7 +5,7 @@
 
 #include "cpu/linear_cpu.hpp"
 #ifdef ENABLE_NVIDIA_API
-#include "../nvidia_ops.cuh"
+#include "nvidia/linear_nvidia.cuh"
 #endif
 
 namespace llaisys::ops {

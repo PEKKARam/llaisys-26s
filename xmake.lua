@@ -129,7 +129,7 @@ target("llaisys")
     if has_config("nv-gpu") then
         -- Compile CUDA translation units into the shared target so nvcc emits
         -- the registration stubs required by the CUDA runtime.
-        add_files("src/ops/nvidia_ops.cu", "src/device/nvidia/*.cu")
+        add_files("src/ops/*/nvidia/*.cu", "src/device/nvidia/*.cu")
         add_cuflags("-std=c++17", "-Xcompiler=-fPIC", {force = true})
         add_ldflags("-Wl,-z,notext")
         add_links("cudadevrt", "cudart_static")
