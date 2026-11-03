@@ -11,11 +11,16 @@ import torch
 from ..libllaisys import DataType
 from ..libllaisys import DeviceType
 from ..libllaisys import LIB_LLAISYS
-from ..libllaisys import LlaisysQwen2Meta
+from ..libllaisys import LlaisysQwen2Meta, LlaisysQwen2State
 
 
 class Qwen2:
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
+    def __init__(
+        self,
+        model_path,
+        device: DeviceType = DeviceType.CPU,
+        cache_capacity: Optional[int] = None,
+    ):
         self.model_path = Path(model_path)
         self.device = device
         self.device_id = 0
@@ -37,42 +42,134 @@ class Qwen2:
         self.end_token = int(config.get("eos_token_id", -1))
         self.tie_word_embeddings = bool(config.get("tie_word_embeddings", False))
         self.dtype = DataType.BF16
+        if self.model_type != "qwen2":
+            raise ValueError(f"Unsupported model_type: {self.model_type}")
+        if cache_capacity is None:
+            cache_capacity = min(2048, self.max_position_embeddings)
+        if (
+            type(cache_capacity) is not int
+            or not 1 <= cache_capacity <= self.max_position_embeddings
+        ):
+            raise ValueError(
+                "cache_capacity must be a positive integer within the model position limit"
+            )
+        self.cache_capacity = cache_capacity
 
         if self.hidden_size % self.num_heads != 0:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
 
         meta = LlaisysQwen2Meta(
-            dtype=self.dtype, nlayer=self.num_layers, hs=self.hidden_size,
-            nh=self.num_heads, nkvh=self.num_kv_heads, dh=self.head_dim,
-            di=self.intermediate_size, maxseq=self.max_position_embeddings,
-            voc=self.vocab_size, epsilon=self.eps, theta=self.theta,
+            dtype=self.dtype,
+            nlayer=self.num_layers,
+            hs=self.hidden_size,
+            nh=self.num_heads,
+            nkvh=self.num_kv_heads,
+            dh=self.head_dim,
+            di=self.intermediate_size,
+            maxseq=self.cache_capacity,
+            voc=self.vocab_size,
+            epsilon=self.eps,
+            theta=self.theta,
             end_token=self.end_token,
         )
         device_ids = (ctypes.c_int * 1)(self.device_id)
+
+        # 创建 C++ 模型，Python通过ctypes
         self._model = LIB_LLAISYS.llaisysQwen2ModelCreate(
             ctypes.byref(meta), self.device, device_ids, 1
         )
         if not self._model:
-            raise RuntimeError("llaisysQwen2ModelCreate returned null")
+            raise RuntimeError(self._last_error())
         self._weights_handle = LIB_LLAISYS.llaisysQwen2ModelWeights(self._model)
         if not self._weights_handle:
             LIB_LLAISYS.llaisysQwen2ModelDestroy(self._model)
             self._model = None
             raise RuntimeError("llaisysQwen2ModelWeights returned null")
 
-        self._load_weights()
+        try:
+            self._load_weights()
+        except Exception:
+            self.close()
+            raise
 
-    def __del__(self):
+    @staticmethod
+    def _last_error():
+        message = LIB_LLAISYS.llaisysQwen2LastError()
+        return (
+            message.decode("utf-8", errors="replace")
+            if message
+            else "Unknown Qwen2 backend error"
+        )
+
+    def _require_open(self):
+        if not getattr(self, "_model", None):
+            raise RuntimeError("Qwen2 model is closed")
+
+    def close(self):
         model = getattr(self, "_model", None)
         if model:
             LIB_LLAISYS.llaisysQwen2ModelDestroy(model)
             self._model = None
+            self._weights_handle = None
+
+    def __del__(self):
+        self.close()
+
+    def __enter__(self):
+        self._require_open()
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    @property
+    def state(self):
+        self._require_open()
+        value = LlaisysQwen2State()
+        if LIB_LLAISYS.llaisysQwen2ModelState(self._model, ctypes.byref(value)) != 0:
+            raise RuntimeError(self._last_error())
+        return {name: int(getattr(value, name)) for name, _ in value._fields_}
+
+    def reset(self):
+        self._require_open()
+        LIB_LLAISYS.llaisysQwen2ModelReset(self._model)
+        if LIB_LLAISYS.llaisysQwen2LastError():
+            raise RuntimeError(self._last_error())
+
+    def infer(self, token_ids: Sequence[int]):
+        self._require_open()
+        ids = [int(token) for token in token_ids]
+        if not ids:
+            raise ValueError("infer requires at least one token")
+        if any(token < 0 or token >= self.vocab_size for token in ids):
+            raise ValueError("token ID is outside the vocabulary")
+        array = (ctypes.c_int64 * len(ids))(*ids)
+        token = int(LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, array, len(ids)))
+        if token < 0:
+            raise RuntimeError(self._last_error())
+        return token
+
+    def prefill(self, token_ids: Sequence[int]):
+        ids = [int(token) for token in token_ids]
+        if not ids or len(ids) > self.cache_capacity:
+            raise ValueError("prefill length is outside cache capacity")
+        if any(token < 0 or token >= self.vocab_size for token in ids):
+            raise ValueError("token ID is outside the vocabulary")
+        self.reset()
+        return self.infer(ids)
+
+    def decode(self, token_id: int):
+        if self.state["cached_len"] == 0:
+            raise RuntimeError("decode requires a prefilled cache")
+        return self.infer([token_id])
 
     def _load_weights(self) -> None:
         weights = self._weights_handle.contents
         loaded: set[str] = set()
         for file in sorted(self.model_path.glob("*.safetensors")):
-            with safetensors.safe_open(str(file), framework="pt", device="cpu") as file_data:
+            with safetensors.safe_open(
+                str(file), framework="pt", device="cpu"
+            ) as file_data:
                 for name in file_data.keys():
                     source = file_data.get_tensor(name)
                     if name in loaded:
@@ -82,29 +179,36 @@ class Qwen2:
 
         required = {"model.embed_tokens.weight", "model.norm.weight"}
         for layer in range(self.num_layers):
-            required.update({
-                f"model.layers.{layer}.input_layernorm.weight",
-                f"model.layers.{layer}.self_attn.q_proj.weight",
-                f"model.layers.{layer}.self_attn.q_proj.bias",
-                f"model.layers.{layer}.self_attn.k_proj.weight",
-                f"model.layers.{layer}.self_attn.k_proj.bias",
-                f"model.layers.{layer}.self_attn.v_proj.weight",
-                f"model.layers.{layer}.self_attn.v_proj.bias",
-                f"model.layers.{layer}.self_attn.o_proj.weight",
-                f"model.layers.{layer}.post_attention_layernorm.weight",
-                f"model.layers.{layer}.mlp.gate_proj.weight",
-                f"model.layers.{layer}.mlp.up_proj.weight",
-                f"model.layers.{layer}.mlp.down_proj.weight",
-            })
+            required.update(
+                {
+                    f"model.layers.{layer}.input_layernorm.weight",
+                    f"model.layers.{layer}.self_attn.q_proj.weight",
+                    f"model.layers.{layer}.self_attn.q_proj.bias",
+                    f"model.layers.{layer}.self_attn.k_proj.weight",
+                    f"model.layers.{layer}.self_attn.k_proj.bias",
+                    f"model.layers.{layer}.self_attn.v_proj.weight",
+                    f"model.layers.{layer}.self_attn.v_proj.bias",
+                    f"model.layers.{layer}.self_attn.o_proj.weight",
+                    f"model.layers.{layer}.post_attention_layernorm.weight",
+                    f"model.layers.{layer}.mlp.gate_proj.weight",
+                    f"model.layers.{layer}.mlp.up_proj.weight",
+                    f"model.layers.{layer}.mlp.down_proj.weight",
+                }
+            )
         if not self.tie_word_embeddings:
             required.add("lm_head.weight")
         missing = sorted(required - loaded)
         if missing:
-            raise ValueError(f"Missing Qwen2 weights: {missing[:4]}" + (" ..." if len(missing) > 4 else ""))
+            raise ValueError(
+                f"Missing Qwen2 weights: {missing[:4]}"
+                + (" ..." if len(missing) > 4 else "")
+            )
 
         if self.tie_word_embeddings and "lm_head.weight" not in loaded:
             source = self._read_weight_source("model.embed_tokens.weight")
-            LIB_LLAISYS.tensorLoad(weights.out_embed, ctypes.c_void_p(source.data_ptr()))
+            LIB_LLAISYS.tensorLoad(
+                weights.out_embed, ctypes.c_void_p(source.data_ptr())
+            )
 
     def _read_weight_source(self, wanted: str):
         for file in sorted(self.model_path.glob("*.safetensors")):
@@ -115,7 +219,9 @@ class Qwen2:
 
     def _assign_backend_weight(self, weights, name: str, source: torch.Tensor) -> None:
         if source.dtype != torch.bfloat16:
-            raise ValueError(f"{name} dtype mismatch: expected torch.bfloat16, got {source.dtype}")
+            raise ValueError(
+                f"{name} dtype mismatch: expected torch.bfloat16, got {source.dtype}"
+            )
         source = source.contiguous()
         handle = None
         if name == "model.embed_tokens.weight":
@@ -152,7 +258,9 @@ class Qwen2:
         LIB_LLAISYS.tensorGetShape(handle, shape)
         expected = tuple(int(shape[i]) for i in range(ndim))
         if tuple(source.shape) != expected:
-            raise ValueError(f"{name} shape mismatch: expected {expected}, got {tuple(source.shape)}")
+            raise ValueError(
+                f"{name} shape mismatch: expected {expected}, got {tuple(source.shape)}"
+            )
         LIB_LLAISYS.tensorLoad(handle, ctypes.c_void_p(source.data_ptr()))
 
     def generate(
@@ -164,32 +272,37 @@ class Qwen2:
         temperature: float = 0.8,
     ):
         if top_k != 1:
-            raise NotImplementedError("Qwen2.generate currently supports argmax only (top_k == 1).")
+            raise NotImplementedError(
+                "Qwen2.generate currently supports argmax only (top_k == 1)."
+            )
 
         if max_new_tokens is None:
             max_new_tokens = 128
+
+        if max_new_tokens < 0:
+            raise ValueError("max_new_tokens must be non-negative")
 
         tokens = [int(token) for token in inputs]
         if not tokens:
             return []
 
-        required_capacity = len(tokens) + max_new_tokens
-        if required_capacity > self.max_position_embeddings:
-            raise ValueError("Requested generation exceeds the model's maximum sequence length")
-
-        LIB_LLAISYS.llaisysQwen2ModelReset(self._model)
-        ids = (ctypes.c_int64 * len(tokens))(*tokens)
-        next_token = int(LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, ids, len(tokens)))
-        tokens.append(next_token)
-
-        if next_token == self.end_token:
+        if max_new_tokens == 0:
             return tokens
 
+        required_capacity = len(tokens) + max_new_tokens - 1
+        if required_capacity > self.cache_capacity:
+            raise ValueError(
+                "Requested generation exceeds cache_capacity; create the model with a larger cache"
+            )
+        if any(token < 0 or token >= self.vocab_size for token in tokens):
+            raise ValueError("token ID is outside the vocabulary")
+        next_token = self.prefill(tokens)
+        tokens.append(next_token)
+        if next_token == self.end_token:
+            return tokens
         for _ in range(max_new_tokens - 1):
-            ids = (ctypes.c_int64 * 1)(tokens[-1])
-            next_token = int(LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, ids, 1))
+            next_token = self.decode(tokens[-1])
             tokens.append(next_token)
             if next_token == self.end_token:
                 break
-
         return tokens

@@ -14,6 +14,7 @@ from .tensor import load_tensor
 from .ops import load_ops
 from .qwen2 import (
     LlaisysQwen2Meta,
+    LlaisysQwen2State,
     LlaisysQwen2Weights,
     llaisysQwen2Model_t,
     load_qwen2,
@@ -60,6 +61,7 @@ __all__ = [
     "MemcpyKind",
     "llaisysStream_t",
     "LlaisysQwen2Meta",
+    "LlaisysQwen2State",
     "LlaisysQwen2Weights",
     "llaisysQwen2Model_t",
 ]

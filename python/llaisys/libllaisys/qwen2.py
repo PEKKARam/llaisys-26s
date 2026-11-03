@@ -43,8 +43,18 @@ class LlaisysQwen2Weights(ctypes.Structure):
 
 llaisysQwen2Model_t = ctypes.c_void_p
 
+class LlaisysQwen2State(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_size_t) for name in (
+        "cached_len", "cache_capacity", "cache_bytes", "weight_bytes",
+        "workspace_bytes", "workspace_allocations",
+    )]
+
 
 def load_qwen2(lib):
+    lib.llaisysQwen2LastError.argtypes = []
+    lib.llaisysQwen2LastError.restype = ctypes.c_char_p
+    lib.llaisysQwen2ModelState.argtypes = [llaisysQwen2Model_t, ctypes.POINTER(LlaisysQwen2State)]
+    lib.llaisysQwen2ModelState.restype = ctypes.c_int
     lib.llaisysQwen2ModelCreate.argtypes = [
         ctypes.POINTER(LlaisysQwen2Meta),
         llaisysDeviceType_t,

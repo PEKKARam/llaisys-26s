@@ -13,7 +13,8 @@ Context::Context() {
     device_typs.push_back(LLAISYS_DEVICE_CPU);
 
     // Create runtimes for each device type.
-    // Activate the first available device. If no other device is available, activate CPU runtime.
+    // Activate the first available device. If no other device is available,
+    // activate CPU runtime.
     for (auto device_type : device_typs) {
         const LlaisysRuntimeAPI *api_ = llaisysGetRuntimeAPI(device_type);
         int device_count = api_->get_device_count();
@@ -51,9 +52,12 @@ Context::~Context() {
 
 void Context::setDevice(llaisysDeviceType_t device_type, int device_id) {
     // If doest not match the current runtime.
-    if (_current_runtime == nullptr || _current_runtime->deviceType() != device_type || _current_runtime->deviceId() != device_id) {
-        auto runtimes = _runtime_map[device_type];
-        CHECK_ARGUMENT((size_t)device_id < runtimes.size() && device_id >= 0, "invalid device id");
+    if (_current_runtime == nullptr
+        || _current_runtime->deviceType() != device_type
+        || _current_runtime->deviceId() != device_id) {
+        auto &runtimes = _runtime_map[device_type];
+        CHECK_ARGUMENT((size_t)device_id < runtimes.size() && device_id >= 0,
+                       "invalid device id");
         if (_current_runtime != nullptr) {
             _current_runtime->_deactivate();
         }
@@ -66,7 +70,8 @@ void Context::setDevice(llaisysDeviceType_t device_type, int device_id) {
 }
 
 Runtime &Context::runtime() {
-    ASSERT(_current_runtime != nullptr, "No runtime is activated, please call setDevice() first.");
+    ASSERT(_current_runtime != nullptr,
+           "No runtime is activated, please call setDevice() first.");
     return *_current_runtime;
 }
 

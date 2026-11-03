@@ -43,5 +43,7 @@ public:
 
     llaisysStream_t stream() const;
     void synchronize() const;
+    LlaisysAllocatorStats allocatorStats() const { return _allocator->stats(); }
+    void resetAllocatorPeak() { _allocator->resetPeak(); }
 };
 } // namespace llaisys::core

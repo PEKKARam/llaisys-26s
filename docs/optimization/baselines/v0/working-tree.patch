@@ -1,0 +1,650 @@
+diff --git a/.clang-format b/.clang-format
+index a77ae97..3c819c9 100644
+--- a/.clang-format
++++ b/.clang-format
+@@ -4,7 +4,7 @@ IndentWidth: 4                        # 缩进宽度，LLVM 默认值为 2，改
+ AccessModifierOffset: -4              # public/protected/private 访问控制符相对成员的偏移，与 IndentWidth 配合，LLVM 默认值为 -2
+ AlignOperands: AlignAfterOperator     # 双目运算符的行间对齐，LLVM 默认值为 Align，改为带符号一起换行
+ BreakBeforeBinaryOperators: All       # 在双目运算符之前换行，LLVM 默认值为 None，改为换行时总是把双目运算符放在行首，包括赋值（=）
+-ColumnLimit: 0                        # 列宽限制，LLVM 默认值为 80，改为不限制
++ColumnLimit: 80                       # 列宽限制，LLVM 默认值为 80，改为不限制
+ AllowShortBlocksOnASingleLine: Always # 是否允许短块（单个语句的块）不换行，LLVM 默认值为 Never，改为允许
+ AllowShortLoopsOnASingleLine: true    # 是否允许短循环不换行，LLVM 默认值为 false，改为允许
+ InsertBraces: true                    # 是否在 if/for/while/switch 等语句后插入大括号，LLVM 默认值为 false，改为允许
+diff --git a/LEARNING_PLAN.md b/LEARNING_PLAN.md
+index 3fda85d..550cfd4 100644
+--- a/LEARNING_PLAN.md
++++ b/LEARNING_PLAN.md
+@@ -1,11 +1,17 @@
+ # LLAISYS 学习与求职方案：从读懂一次推理，到做出可复现的优化
+ 
+-更新：2026-10-24。对象：已经写过 CUDA SGEMM、完成过本项目基础算子，但还不能独立解释模型前向的你。
++更新：2026-11-01。当前你已经理解 Qwen2 `infer`、attention/GQA/RoPE/KV Cache 和权重加载；作业 1/2 的 Tensor 核心方法与七个 CPU 算子由你独立完成。当前重点转向作业 3/4 的验证、性能测量与优化。
++
++**近期执行以 [简历与一个月计划](RESUME_AND_30_DAY_PLAN.md) 为准。** 该计划第 0 节按 Git 历史区分课程框架和后续实现，第 2 节提供三条投递文案，第 3 节规定 HF 对比与性能指标口径。本文保留数学讲解和历史学习路线作查阅，不要求从头重读。
+ 
+ 这份方案的目标是：你能够从一个 token 的编号出发，讲清楚它经过哪些计算、数据放在哪里、为什么结果正确、哪里慢，以及你怎样通过实验让它变快。项目大不大、功能多不多，是次要的。
+ 
+ **先给结论：保留现有引擎和测试，补齐理解与验证；不要再让 AI 一次性重写一套你不理解的系统。项目目标限定为单卡 NVIDIA CUDA 推理和一到两个优化，保留 CPU 作为参考与回归后端。** 你目前没有其他 GPU 平台资源，因此不实施双平台适配，也不把它列入后续学习或验收任务。
+ 
++**当前 HF 对照结果（2026-11-01）：** 9 条 WikiText 固定输入、最多生成 8 个 token，BF16/greedy/HF eager attention 下 0/9 序列完全一致，5 条首 token 即有差异。HF 运行所需的 Python 开发头文件已在本地缓存补齐。近期先定位 prefill 偏差，再推进性能优化；详见 [对照报告](docs/results/token_compare_20261101.md)。下文旧测试记录按各自日期解释，不能当作最新整模型对齐结论。
++
++**三个中间检查点已导出（2026-11-01）：** `benchmark/compare_tensors.py` 实测 Embedding 数值一致，第 0 层 input RMSNorm 已有差异，第 0 层结束时误差进一步增大；原始张量和指标在 `cache/tensor_debug/`，摘要见 [张量对照报告](docs/results/tensor_compare_20261101.md)。下一步缩小到 RMSNorm 的相同输入/权重实验和第 0 层内部检查，当前尚未确定全部差异的根因。
++
+ ## 阅读导航
+ 
+ - 今天就开始：[第 1 节](#1-今天先做什么)；不要一次读完整篇。
+@@ -20,13 +26,14 @@
+ 
+ ## 1. 今天先做什么
+ 
+-先完成三个小任务，不要求今天看懂整个 Transformer。
++你的 infer 与权重加载理解已完成，接下来不再重复阅读这两条链。按以下顺序推进：
+ 
+-1. 打开 [Python Qwen2](python/llaisys/models/qwen2.py)，只读 `generate()`。用中文写下：第一次传入什么；以后每次传入什么；什么时候停止。
+-2. 打开 [C++ 模型](src/models/qwen2/model.cpp)，找到 `Model::infer()`。先圈出 `embedding`、层循环、`rms_norm`、最后的 `linear`、`argmax`，忽略内层计算。
+-3. 用纸画出：`token IDs → embedding → 多层 Transformer → logits → argmax → 新 token ID`。在每个箭头旁写出 shape。暂时不知道的就留空，后面补。
++1. 对照 [贡献来源表](RESUME_AND_30_DAY_PLAN.md)，记清框架提供什么、作业 1/2 手写什么、作业 3/4 后续补了什么。
++2. 写完整前缀与增量解码、reset 后请求隔离的对照用例；解决此前 HF 参考运行的环境问题，再记录可复现的正确性结果。
++3. 修正模型 benchmark：一次请求内统计 prefill/decode，明确显存统计范围，并与相同模型、输入和 dtype 的 HF 路径比较。
++4. 建立 baseline 后完成最后位置 LM head 优化，验证正确性并报告优化前后数据。暂不扩大到第二平台、量化引擎或多模型支持。
+ 
+-今天需要理解的一个例子：输入 `[10, 20, 30]`，第一次 `infer` 返回 `40`；第二次把 `[40]` 送入 `infer`，可能返回 `50`。第二次没有重新传 `[10, 20, 30]`，因为历史的 K、V 已经保存在模型里。
++框架底层读到能解释所有权、view/slice、分配释放、复制和同步即可；遇到具体瓶颈或资源问题再深入。作业 3/4 的实现与实验是近期投入中心。
+ 
+ ### 1.1 当前机器可使用的命令
+ 
+@@ -159,6 +166,14 @@ flowchart TD
+ 
+ `P0/P1/P2` 表示建议先后，不表示所有问题都会在当前合法输入下触发。测试通过也不会自动排除接口边界和资源生命周期问题。
+ 
++### 3.4 框架提供与个人作业的边界（2026-10-30 核查）
++
++以作业 1 首次提交 `74217f6` 的父提交 `7740d46` 为本地课程基线。`src/core/`、CPU Runtime、CPU add 示例、通用接口和测试主体来自框架。Tensor 核心视图/加载方法和七个 CPU 算子在作业 1/2 提交中补齐；Qwen2 原型与占位 Python 类已有，但完整 C++ 前向、KV Cache、权重映射、模型 ctypes 绑定及 CUDA Runtime/kernel 是后续工作。
++
++其中 `94b078c`、`f23b543` 新增的是 CPU 算子，CUDA kernel 出现在 `63d5f78`，与作业 3/4 的 AI 辅助经历对应。因此，之前把“独立完成七个算子”直接写为“独立完成七个 CUDA 算子”的描述不准确，此处已纠正。Git 能证明增改历史，手写/AI 来源需结合你的真实经历；不能从提交 author 自动推定。
++
++详细文件、提交证据、模型头文件已有与新增部分，以及框架所需理解深度，见 [短期计划第 0 节](RESUME_AND_30_DAY_PLAN.md)。AI 辅助实现可以作为你负责的项目工作，但应能解释、验证和修改；不把“看懂”自动写成“独立手写/设计”或已完成实验。
++
+ ## 4. 前置知识：只补当前用得上的部分
+ 
+ 你有 SGEMM 基础，不需要重新从 CUDA 入门学起。当前缺口主要是“模型数学 → shape → 内存布局 → 调用链”。
+@@ -413,7 +428,7 @@ infer([50])       → 返回60，缓存长度=5
+ 
+ ## 6. 学习安排：每一步都要留下可检查的产物
+ 
+-建议按每周 10～15 小时安排 6～8 周；这是学习预算，不是完成保证。时间不够就延长，按验收结果推进，不按日历强行跳阶段。
++以下是最初面向从头学习的参考路线，**不再作为你当前的逐周任务**。你已完成模型前向与权重加载理解，可跳过相应阅读。近期按 [一个月计划](RESUME_AND_30_DAY_PLAN.md) 执行：正确性 → 可靠计时与 HF 对比 → 一项优化 → 简历结果；以下扩展内容需要时再查阅。
+ 
+ ### 第 1 周：把数学和 shape 接起来
+ 
+@@ -682,7 +697,7 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler 
+ 
+ | 层次 | 可展示内容 | 怎样定位 |
+ | --- | --- | --- |
+-| 基础实践 | 自己完成的 Tensor/七个 CUDA 算子、现有测试结果，能讲清算法和实现 | 可以写成课程/实践项目；不要称完整高性能引擎 |
++| 基础实践 | 自己完成的 Tensor 核心方法/七个 CPU 算子、后续 CUDA 实现与现有测试结果，能讲清算法和实现 | 可以写成课程/实践项目；不要称完整高性能引擎 |
+ | 完整推理 | 理解 C++ Qwen2、权重装载、GQA/RoPE/KV Cache；小模型与真实模型正确性有记录 | 可以作为单卡推理引擎项目，明确来源和支持范围 |
+ | 推理优化/算子岗位推荐目标 | 在上一层基础上，完成可靠 benchmark、一次有证据的性能定位、至少一个亲自完成并能复现的优化 | 项目有辨识度；能从公式、布局、kernel 讲到端到端收益 |
+ 
+@@ -712,13 +727,15 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler 
+ 
+ ### 9.3 你和 AI 的贡献应怎么表述
+ 
+-项目来源、实际作者和个人贡献要分开。可以写“基于 LLAISYS 教学框架，完成……”，不要把课程框架称为全部从零自研。你独立完成的七个算子可以明确写；作业 3、4 中 AI 生成的部分，在你尚未理解、测试、修改前，不宜表述为独立设计实现。
++项目来源、实际作者和个人贡献要分开。可以写“基于 LLAISYS 教学框架，完成……”，不要把课程框架称为全部从零自研。你独立完成的 Tensor 核心方法和七个 CPU 算子可以明确写；CUDA 和模型部分是后续补充，含 AI 辅助，适合描述为基于框架完成/完善后端，不宜表述为独立手写全部 CUDA 算子。
+ 
+ 用 AI 不会自动让项目失去价值。需要补的是所有权感对应的实际能力：你能解释设计、发现缺陷、独立复现问题并改进。建议从现在起每次学习或优化都保存小 commit，并写三句话：问题、原因、验证。
+ 
+ 现在可以使用的保守表述，须与你自己确认的贡献一致：
+ 
+-> 基于 LLAISYS 教学框架实现 7 个基础算子的 CUDA 版本，覆盖 FP32/FP16/BF16，并与 PyTorch 参考结果对照验证；进一步学习和完善 Qwen2 单卡推理链路。
++> 基于 LLAISYS 教学框架，独立实现 Tensor 核心方法和 7 个 CPU 算子，后续完善 Qwen2 模型与 NVIDIA CUDA 后端；现有算子用例覆盖 FP32/FP16/BF16，并进行 PyTorch 数值对照。
++
++当前三条完整投递文案及获得 benchmark 后的替换模板，以 [短期计划第 2 节](RESUME_AND_30_DAY_PLAN.md) 为准。
+ 
+ 完成推荐目标后，可使用下面的模板；方括号内必须替换为真实结果，没有完成的能力直接删掉：
+ 
+@@ -747,7 +764,7 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler 
+ 
+ ### 10.1 删除与保留的依据
+ 
+-清理前 Git 工作区干净，基准提交为 `e947d93`。本次没有创建提交；可通过 `git diff` 审阅。
++以下记录首次清理时的状态：当时 Git 工作区干净，清理基准提交为 `e947d93`；该记录不代表当前工作区状态，也不同于贡献来源核查使用的课程基线 `7740d46`。后续重构已进入 `acf0b54`；本次 2026-10-30 更新未创建提交。
+ 
+ | 内容 | 本次处理 | 原因 |
+ | --- | --- | --- |
+diff --git a/benchmark/README.md b/benchmark/README.md
+index 5342c5a..486b03e 100644
+--- a/benchmark/README.md
++++ b/benchmark/README.md
+@@ -1,5 +1,177 @@
+ # Benchmark
+ 
++## Prompt preparation dependencies
++
++From the repository root, install the tested prompt-preparation dependencies into
++the existing virtual environment and run the script:
++
++```bash
++uv pip install --python .venv/bin/python -r benchmark/requirements.txt
++.venv/bin/python benchmark/prepare_prompts.py
++```
++
++This virtual environment was created with uv and does not include pip. Transformers
++5.15.0 and Tokenizers 0.22.2 require `huggingface-hub < 2.0`, while Datasets 5.1.0
++requires `huggingface-hub >= 1.31.0`. The requirements above pin a compatible set;
++installing an unconstrained Hub 2.x causes the Transformers import to fail.
++Check the environment with `uv pip check --python .venv/bin/python`.
++The HTTPX SOCKS extra is included for the local proxy configuration; without it,
++Hub requests fail with `Using SOCKS proxy, but the 'socksio' package is not installed`.
++
++`prepare_prompts.py` selects the first three nonempty, non-heading test rows with
++at least 128 tokens. Each row produces prefixes of 16, 64, and 128 tokens, for
++nine samples in `cache/prompt_sets/wikitext2_smoke.jsonl`. Each JSONL line records
++the sample ID, dataset commit, zero-based source row, prompt length, token IDs,
++and `input_mode="raw_completion"`. No chat template or automatic special tokens
++are added.
++
++The model and output paths are resolved relative to the repository, so running
++the script from another working directory uses the same files. Rerunning replaces
++the output rather than appending duplicates. Source data and its commit are saved
++as a local snapshot; later runs reuse it offline. Use `--refresh` to resolve and
++download the current dataset version again. Every sample records the commit;
++reuse the generated file for experiments with identical input IDs. The output is
++ignored by Git under `cache/`.
++
++To inspect one saved sample from the repository root:
++
++```bash
++.venv/bin/python - <<'PY'
++import json
++from pathlib import Path
++
++path = Path("cache/prompt_sets/wikitext2_smoke.jsonl")
++samples = [json.loads(line) for line in path.read_text().splitlines()]
++print("samples:", len(samples))
++print(json.dumps(samples[0], ensure_ascii=False, indent=2))
++assert len(samples) == 9
++assert all(len(sample["input_ids"]) == sample["prompt_tokens"] for sample in samples)
++PY
++```
++
++## Run one saved prompt
++
++Start with a short native generation to check the file-to-model path:
++
++```bash
++.venv/bin/python benchmark/run_prompt.py
++```
++
++The default is `row_3_len_16` on NVIDIA, requesting three new tokens. The script
++passes the saved IDs directly to `Qwen2.generate(top_k=1)` without a chat template
++or re-tokenization. It prints the new token IDs and decoded text, checks that the
++returned sequence preserves the input prefix, and appends a record to
++`benchmark/results/generation_smoke.jsonl`. EOS may stop generation early.
++
++After checking that output, try a longer saved input:
++
++```bash
++.venv/bin/python benchmark/run_prompt.py --sample-id row_3_len_64
++```
++
++This is a generation smoke test. It does not compare against Hugging Face or
++measure benchmark performance; saved records explicitly say `reference_check=not_run`.
++
++## Compare native generation with Hugging Face
++
++```bash
++# One short case first.
++.venv/bin/python benchmark/compare_prompt.py
++
++# Compare all nine inputs, requesting up to eight new tokens per input.
++.venv/bin/python benchmark/compare_prompt.py --all --max-new-tokens 8
++```
++
++Both implementations receive the exact saved token IDs and the same local weights.
++The reference uses BF16, eager attention, eval/inference mode, and an explicit
++argmax loop with KV Cache. It does not inherit the model's default sampling
++settings. EOS comes from the same model config. The HF model is released before
++loading LLAISYS to avoid holding both models on the GPU simultaneously.
++
++Records are appended to `benchmark/results/generation_compare.jsonl`. Each record
++contains both generated ID lists and `reference_check=pass/fail`; `first_mismatch`
++reports the zero-based new-token index and both IDs. If one output ends earlier,
++the missing side is recorded as `null`. Any mismatch makes the script exit with
++status 1 after saving all completed comparisons. A token mismatch is diagnostic
++evidence; it does not by itself establish the location or cause of a numerical
++error. Matching tokens likewise does not prove that all logits match.
++
++The installed PyTorch can invoke Triton even without explicit `torch.compile`.
++Triton's compiler requires matching Python development headers. This machine's
++Python 3.12 headers were extracted from Ubuntu's `libpython3.12-dev` package into
++`cache/python-dev/`; `compare_prompt.py` uses that include tree if the system
++`Python.h` is absent. This changes compiler include paths, not model calculations.
++On another Ubuntu machine running Python 3.12, installing `python3.12-dev` provides
++the system headers. The local cache is ignored by Git and must be recreated when
++reproducing that environment elsewhere.
++
++These comparisons establish a correctness checkpoint. They do not provide
++benchmark timings or end-to-end quality scores.
++
++The initial 2026-11-01 run found mismatches in all nine eight-token cases; see the
++[recorded conditions and first differences](../docs/results/token_compare_20261101.md).
++
++## Compare intermediate prefill tensors
++
++Build the opt-in native snapshot support, then compare one prefill:
++
++```bash
++xmake -y
++xmake install -y
++.venv/bin/python benchmark/compare_tensors.py
++```
++
++The default input is `row_3_len_64`. HF forward hooks and native snapshot points
++capture `embedding`, `layer0.input_norm`, and `layer0.output`. HF's batch dimension
++is removed so both sides use `[token, hidden]`. Both models run BF16 with identical
++input IDs, and only one new token is computed. No subsequent decode is involved.
++
++Native snapshots are enabled by the process environment variable
++`LLAISYS_QWEN2_DEBUG_DIR`. The script sets it only around native generation and
++restores its previous value afterward. With the variable absent or empty, native
++inference performs no snapshot copies or file writes. Snapshots are taken only
++when cached length is zero, so later decode calls cannot overwrite the prefill
++files. Another reset/new request can overwrite files if the same directory is
++manually reused; the comparison script creates a fresh directory for every run.
++
++Output layout:
++
++```text
++cache/tensor_debug/row_3_len_64_<unique suffix>/
++  hf/
++    embedding.pt                 # [T,H] float32 CPU values; source dtype recorded
++    layer0.input_norm.pt
++    layer0.output.pt
++  native/
++    embedding.bin                # Original BF16/F16/F32 bytes copied to the host
++    embedding.json               # dtype, shape, byte order, byte count
++    layer0.input_norm.bin
++    layer0.input_norm.json
++    layer0.output.bin
++    layer0.output.json
++  summary.json                   # Metrics, first difference index/values, input metadata
++  summary.md                     # Readable comparison table
++```
++
++The native reader validates dtype, byte order, shape, and file length before
++converting to float32 for comparison. BF16 conversion here preserves the stored
++numeric values; it does not recover precision lost during inference. Exact-value
++agreement is numeric equality, not a bitwise test of signed zero or NaN payloads.
++Errors are computed over finite pairs; non-finite counts are reported separately.
++No automatic tolerance classifies the first rounding difference as a model bug.
++
++Inspect `summary.md` for the table and `summary.json` for the first differing
++`[token, channel]` coordinate. To change inputs:
++
++```bash
++.venv/bin/python benchmark/compare_tensors.py --sample-id row_3_len_16
++```
++
++This command succeeds when snapshots and metrics are produced, even if their
++values or generated tokens differ. Shape/format problems cause an error. These
++diagnostic runs include extra synchronization, D2H copies, and file I/O, so their
++timings must not be used as performance measurements.
++
+ See the [learning plan](../LEARNING_PLAN.md) for the current implementation audit and
+ the proposed measurement improvements. Existing inference timings estimate TPOT from
+ two independent generations; they are not direct decode measurements. CUDA event timing
+diff --git a/python/llaisys/models/qwen2.py b/python/llaisys/models/qwen2.py
+index c72b5b1..de00c8c 100644
+--- a/python/llaisys/models/qwen2.py
++++ b/python/llaisys/models/qwen2.py
+@@ -49,6 +49,8 @@ class Qwen2:
+             end_token=self.end_token,
+         )
+         device_ids = (ctypes.c_int * 1)(self.device_id)
++        
++        # 创建 C++ 模型，Python通过ctypes
+         self._model = LIB_LLAISYS.llaisysQwen2ModelCreate(
+             ctypes.byref(meta), self.device, device_ids, 1
+         )
+@@ -168,10 +170,16 @@ class Qwen2:
+ 
+         if max_new_tokens is None:
+             max_new_tokens = 128
++        
++        if max_new_tokens < 0:
++            raise ValueError("max_new_tokens must be non-negative")
+ 
+         tokens = [int(token) for token in inputs]
+         if not tokens:
+             return []
++        
++        if max_new_tokens == 0:
++            return tokens
+ 
+         required_capacity = len(tokens) + max_new_tokens
+         if required_capacity > self.max_position_embeddings:
+diff --git a/src/models/qwen2/model.cpp b/src/models/qwen2/model.cpp
+index 96e0f3f..06e26f1 100644
+--- a/src/models/qwen2/model.cpp
++++ b/src/models/qwen2/model.cpp
+@@ -1,6 +1,7 @@
+ #include "model.hpp"
++#include "debug_dump.hpp"
+ 
+-#include "../../utils/check.hpp"
++#include "../../llaisys/llaisys_tensor.hpp"
+ #include "../../ops/add/op.hpp"
+ #include "../../ops/argmax/op.hpp"
+ #include "../../ops/embedding/op.hpp"
+@@ -9,53 +10,56 @@
+ #include "../../ops/rope/op.hpp"
+ #include "../../ops/self_attention/op.hpp"
+ #include "../../ops/swiglu/op.hpp"
+-#include "../../llaisys/llaisys_tensor.hpp"
++#include "../../utils/check.hpp"
+ 
+ #include <cmath>
+-#include <limits>
++#include <cstdlib>
+ #include <cstring>
++#include <limits>
+ 
+ namespace llaisys::models::qwen2 {
+ namespace {
+ 
+ void validateMeta(const LlaisysQwen2Meta &meta) {
+-    CHECK_ARGUMENT(meta.nlayer > 0, "Qwen2 must contain at least one decoder layer");
++    CHECK_ARGUMENT(meta.nlayer > 0,
++                   "Qwen2 must contain at least one decoder layer");
+     CHECK_ARGUMENT(meta.hs > 0, "Qwen2 hidden size must be positive");
+     CHECK_ARGUMENT(meta.nh > 0, "Qwen2 attention head count must be positive");
+     CHECK_ARGUMENT(meta.nkvh > 0, "Qwen2 KV head count must be positive");
+     CHECK_ARGUMENT(meta.dh > 0, "Qwen2 head dimension must be positive");
+     CHECK_ARGUMENT(meta.di > 0, "Qwen2 intermediate size must be positive");
+-    CHECK_ARGUMENT(meta.maxseq > 0, "Qwen2 maximum sequence length must be positive");
++    CHECK_ARGUMENT(meta.maxseq > 0,
++                   "Qwen2 maximum sequence length must be positive");
+     CHECK_ARGUMENT(meta.voc > 0, "Qwen2 vocabulary size must be positive");
+-    CHECK_ARGUMENT(meta.hs == meta.nh * meta.dh, "hidden size must equal attention heads times head dimension");
+-    CHECK_ARGUMENT(meta.nh % meta.nkvh == 0, "attention head count must be divisible by KV head count");
++    CHECK_ARGUMENT(
++        meta.hs == meta.nh * meta.dh,
++        "hidden size must equal attention heads times head dimension");
++    CHECK_ARGUMENT(meta.nh % meta.nkvh == 0,
++                   "attention head count must be divisible by KV head count");
+     CHECK_ARGUMENT(meta.epsilon > 0.0f, "RMSNorm epsilon must be positive");
+     CHECK_ARGUMENT(meta.theta > 0.0f, "RoPE theta must be positive");
+-    CHECK_ARGUMENT(
+-        meta.dtype == LLAISYS_DTYPE_F32
+-            || meta.dtype == LLAISYS_DTYPE_F16
+-            || meta.dtype == LLAISYS_DTYPE_BF16,
+-        "Qwen2 weights must use F32, F16, or BF16");
++    CHECK_ARGUMENT(meta.dtype == LLAISYS_DTYPE_F32
++                       || meta.dtype == LLAISYS_DTYPE_F16
++                       || meta.dtype == LLAISYS_DTYPE_BF16,
++                   "Qwen2 weights must use F32, F16, or BF16");
+ }
+ 
+ } // namespace
+ 
+-Model::Model(
+-    const LlaisysQwen2Meta &meta,
+-    llaisysDeviceType_t device,
+-    const int *device_ids,
+-    int ndevice)
++Model::Model(const LlaisysQwen2Meta &meta, llaisysDeviceType_t device,
++             const int *device_ids, int ndevice)
+     : _meta(meta), _device(device), _device_id(0) {
+     validateMeta(meta);
+-    CHECK_ARGUMENT(ndevice == 1, "the initial Qwen2 backend supports exactly one device");
++    CHECK_ARGUMENT(ndevice == 1,
++                   "the initial Qwen2 backend supports exactly one device");
+     CHECK_ARGUMENT(device_ids != nullptr, "Qwen2 device_ids must not be null");
+     CHECK_ARGUMENT(device_ids[0] >= 0, "Qwen2 device ID must not be negative");
+     _device_id = device_ids[0];
+ 
+     const size_t tensors_per_layer = 12;
+-    CHECK_ARGUMENT(
+-        meta.nlayer <= (std::numeric_limits<size_t>::max() - 3) / tensors_per_layer,
+-        "Qwen2 layer count is too large");
++    CHECK_ARGUMENT(meta.nlayer <= (std::numeric_limits<size_t>::max() - 3)
++                                      / tensors_per_layer,
++                   "Qwen2 layer count is too large");
+     _owned_tensors.reserve(3 + tensors_per_layer * meta.nlayer);
+     allocateWeights();
+     allocateCache();
+@@ -67,8 +71,10 @@ void Model::allocateCache() {
+     _k_cache.reserve(_meta.nlayer);
+     _v_cache.reserve(_meta.nlayer);
+     for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
+-        _k_cache.push_back(Tensor::create(shape, _meta.dtype, _device, _device_id));
+-        _v_cache.push_back(Tensor::create(shape, _meta.dtype, _device, _device_id));
++        _k_cache.push_back(
++            Tensor::create(shape, _meta.dtype, _device, _device_id));
++        _v_cache.push_back(
++            Tensor::create(shape, _meta.dtype, _device, _device_id));
+     }
+ }
+ 
+@@ -88,12 +94,13 @@ void Model::allocateWeights() {
+     _weights.out_embed = createTensor({_meta.voc, _meta.hs});
+     _weights.out_norm_w = createTensor({_meta.hs});
+ 
+-    auto allocate_per_layer = [this](auto &handles, const std::vector<size_t> &shape) {
+-        handles.reserve(_meta.nlayer);
+-        for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
+-            handles.push_back(createTensor(shape));
+-        }
+-    };
++    auto allocate_per_layer
++        = [this](auto &handles, const std::vector<size_t> &shape) {
++              handles.reserve(_meta.nlayer);
++              for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
++                  handles.push_back(createTensor(shape));
++              }
++          };
+ 
+     allocate_per_layer(_attn_norm_w, {_meta.hs});
+     allocate_per_layer(_attn_q_w, {query_size, _meta.hs});
+@@ -124,18 +131,20 @@ void Model::exposeWeightArrays() {
+     _weights.mlp_down_w = _mlp_down_w.data();
+ }
+ 
+-LlaisysQwen2Weights *Model::weights() {
+-    return &_weights;
+-}
++LlaisysQwen2Weights *Model::weights() { return &_weights; }
+ 
+-void Model::reset() {
+-    _cached_len = 0;
+-}
++void Model::reset() { _cached_len = 0; }
+ 
+ int64_t Model::infer(const int64_t *token_ids, size_t ntoken) {
+     CHECK_ARGUMENT(token_ids != nullptr, "Qwen2 token IDs must not be null");
+     CHECK_ARGUMENT(ntoken > 0, "Qwen2 inference requires at least one token");
+-    CHECK_ARGUMENT(ntoken <= _meta.maxseq - _cached_len, "Qwen2 inference exceeds maximum sequence length");
++    CHECK_ARGUMENT(ntoken <= _meta.maxseq - _cached_len,
++                   "Qwen2 inference exceeds maximum sequence length");
++
++    // Opt-in diagnostics for the first chunk only; later decode calls cannot
++    // overwrite these prefill snapshots. With no directory, no copies/I/O run.
++    const char *debug_dir = _cached_len == 0 ? std::getenv("LLAISYS_QWEN2_DEBUG_DIR") : nullptr;
++    const bool dump_prefill = debug_dir != nullptr && debug_dir[0] != '\0';
+ 
+     auto wrap = [](llaisysTensor_t handle) -> tensor_t {
+         CHECK_ARGUMENT(handle != nullptr, "Qwen2 weight handle is null");
+@@ -143,33 +152,51 @@ int64_t Model::infer(const int64_t *token_ids, size_t ntoken) {
+     };
+     auto ids = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
+     ids->load(token_ids);
+-    auto hidden = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
++    auto hidden
++        = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
+     ops::embedding(hidden, ids, wrap(_weights.in_embed));
++    if (dump_prefill) debug::dumpTensor(debug_dir, "embedding", hidden);
+ 
+     const size_t old_len = _cached_len;
+     for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
+         auto residual = hidden;
+-        auto normed = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
+-        ops::rms_norm(normed, hidden, wrap(_weights.attn_norm_w[layer]), _meta.epsilon);
++        auto normed = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device,
++                                     _device_id);
++        ops::rms_norm(normed, hidden, wrap(_weights.attn_norm_w[layer]),
++                      _meta.epsilon);
++        if (dump_prefill && layer == 0) {
++            debug::dumpTensor(debug_dir, "layer0.input_norm", normed);
++        }
+ 
+         const size_t qdim = _meta.nh * _meta.dh;
+         const size_t kvdim = _meta.nkvh * _meta.dh;
+-        auto q_flat = Tensor::create({ntoken, qdim}, _meta.dtype, _device, _device_id);
+-        auto k_flat = Tensor::create({ntoken, kvdim}, _meta.dtype, _device, _device_id);
+-        auto v_flat = Tensor::create({ntoken, kvdim}, _meta.dtype, _device, _device_id);
+-        ops::linear(q_flat, normed, wrap(_weights.attn_q_w[layer]), wrap(_weights.attn_q_b[layer]));
+-        ops::linear(k_flat, normed, wrap(_weights.attn_k_w[layer]), wrap(_weights.attn_k_b[layer]));
+-        ops::linear(v_flat, normed, wrap(_weights.attn_v_w[layer]), wrap(_weights.attn_v_b[layer]));
++        auto q_flat
++            = Tensor::create({ntoken, qdim}, _meta.dtype, _device, _device_id);
++        auto k_flat
++            = Tensor::create({ntoken, kvdim}, _meta.dtype, _device, _device_id);
++        auto v_flat
++            = Tensor::create({ntoken, kvdim}, _meta.dtype, _device, _device_id);
++        ops::linear(q_flat, normed, wrap(_weights.attn_q_w[layer]),
++                    wrap(_weights.attn_q_b[layer]));
++        ops::linear(k_flat, normed, wrap(_weights.attn_k_w[layer]),
++                    wrap(_weights.attn_k_b[layer]));
++        ops::linear(v_flat, normed, wrap(_weights.attn_v_w[layer]),
++                    wrap(_weights.attn_v_b[layer]));
+ 
+         auto q = q_flat->view({ntoken, _meta.nh, _meta.dh});
+         auto k = k_flat->view({ntoken, _meta.nkvh, _meta.dh});
+         auto v = v_flat->view({ntoken, _meta.nkvh, _meta.dh});
+-        auto positions = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
++        auto positions
++            = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
+         std::vector<int64_t> host_positions(ntoken);
+-        for (size_t i = 0; i < ntoken; ++i) host_positions[i] = static_cast<int64_t>(old_len + i);
++        for (size_t i = 0; i < ntoken; ++i) {
++            host_positions[i] = static_cast<int64_t>(old_len + i);
++        }
+         positions->load(host_positions.data());
+-        auto q_rot = Tensor::create({ntoken, _meta.nh, _meta.dh}, _meta.dtype, _device, _device_id);
+-        auto k_rot = Tensor::create({ntoken, _meta.nkvh, _meta.dh}, _meta.dtype, _device, _device_id);
++        auto q_rot = Tensor::create({ntoken, _meta.nh, _meta.dh}, _meta.dtype,
++                                    _device, _device_id);
++        auto k_rot = Tensor::create({ntoken, _meta.nkvh, _meta.dh}, _meta.dtype,
++                                    _device, _device_id);
+         ops::rope(q_rot, q, positions, _meta.theta);
+         ops::rope(k_rot, k, positions, _meta.theta);
+ 
+@@ -178,45 +205,66 @@ int64_t Model::infer(const int64_t *token_ids, size_t ntoken) {
+         auto v_dst = _v_cache[layer]->slice(0, old_len, cache_end);
+         const size_t bytes = ntoken * kvdim * _k_cache[layer]->elementSize();
+         core::context().setDevice(_device, _device_id);
+-        core::context().runtime().api()->memcpy_sync(k_dst->data(), k_rot->data(), bytes, LLAISYS_MEMCPY_D2D);
+-        core::context().runtime().api()->memcpy_sync(v_dst->data(), v->data(), bytes, LLAISYS_MEMCPY_D2D);
++        core::context().runtime().api()->memcpy_sync(
++            k_dst->data(), k_rot->data(), bytes, LLAISYS_MEMCPY_D2D);
++        core::context().runtime().api()->memcpy_sync(v_dst->data(), v->data(),
++                                                     bytes, LLAISYS_MEMCPY_D2D);
+ 
+         auto cached_k = _k_cache[layer]->slice(0, 0, cache_end);
+         auto cached_v = _v_cache[layer]->slice(0, 0, cache_end);
+-        auto attn = Tensor::create({ntoken, _meta.nh, _meta.dh}, _meta.dtype, _device, _device_id);
+-        ops::self_attention(attn, q_rot, cached_k, cached_v, 1.0f / std::sqrt(static_cast<float>(_meta.dh)));
++        auto attn = Tensor::create({ntoken, _meta.nh, _meta.dh}, _meta.dtype,
++                                   _device, _device_id);
++        ops::self_attention(attn, q_rot, cached_k, cached_v,
++                            1.0f / std::sqrt(static_cast<float>(_meta.dh)));
+         auto attn_flat = attn->view({ntoken, _meta.hs});
+-        auto attn_out = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
+-        ops::linear(attn_out, attn_flat, wrap(_weights.attn_o_w[layer]), nullptr);
+-        auto post_attn = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
++        auto attn_out = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device,
++                                       _device_id);
++        ops::linear(attn_out, attn_flat, wrap(_weights.attn_o_w[layer]),
++                    nullptr);
++        auto post_attn = Tensor::create({ntoken, _meta.hs}, _meta.dtype,
++                                        _device, _device_id);
+         ops::add(post_attn, residual, attn_out);
+ 
+-        auto mlp_norm = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
+-        ops::rms_norm(mlp_norm, post_attn, wrap(_weights.mlp_norm_w[layer]), _meta.epsilon);
+-        auto gate = Tensor::create({ntoken, _meta.di}, _meta.dtype, _device, _device_id);
+-        auto up = Tensor::create({ntoken, _meta.di}, _meta.dtype, _device, _device_id);
++        auto mlp_norm = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device,
++                                       _device_id);
++        ops::rms_norm(mlp_norm, post_attn, wrap(_weights.mlp_norm_w[layer]),
++                      _meta.epsilon);
++        auto gate = Tensor::create({ntoken, _meta.di}, _meta.dtype, _device,
++                                   _device_id);
++        auto up = Tensor::create({ntoken, _meta.di}, _meta.dtype, _device,
++                                 _device_id);
+         ops::linear(gate, mlp_norm, wrap(_weights.mlp_gate_w[layer]), nullptr);
+         ops::linear(up, mlp_norm, wrap(_weights.mlp_up_w[layer]), nullptr);
+-        auto mlp = Tensor::create({ntoken, _meta.di}, _meta.dtype, _device, _device_id);
++        auto mlp = Tensor::create({ntoken, _meta.di}, _meta.dtype, _device,
++                                  _device_id);
+         ops::swiglu(mlp, gate, up);
+-        auto down = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
++        auto down = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device,
++                                   _device_id);
+         ops::linear(down, mlp, wrap(_weights.mlp_down_w[layer]), nullptr);
+-        hidden = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
++        hidden = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device,
++                                _device_id);
+         ops::add(hidden, post_attn, down);
++        if (dump_prefill && layer == 0) {
++            debug::dumpTensor(debug_dir, "layer0.output", hidden);
++        }
+     }
+     _cached_len += ntoken;
+ 
+-    auto final_norm = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
++    auto final_norm
++        = Tensor::create({ntoken, _meta.hs}, _meta.dtype, _device, _device_id);
+     ops::rms_norm(final_norm, hidden, wrap(_weights.out_norm_w), _meta.epsilon);
+-    auto logits = Tensor::create({ntoken, _meta.voc}, _meta.dtype, _device, _device_id);
++    auto logits
++        = Tensor::create({ntoken, _meta.voc}, _meta.dtype, _device, _device_id);
+     ops::linear(logits, final_norm, wrap(_weights.out_embed), nullptr);
+     auto last_logits = logits->slice(0, ntoken - 1, ntoken);
+-    auto max_idx = Tensor::create({1, 1}, LLAISYS_DTYPE_I64, _device, _device_id);
++    auto max_idx
++        = Tensor::create({1, 1}, LLAISYS_DTYPE_I64, _device, _device_id);
+     auto max_val = Tensor::create({1, 1}, _meta.dtype, _device, _device_id);
+     ops::argmax(max_idx, max_val, last_logits);
+     int64_t result = -1;
+     core::context().setDevice(_device, _device_id);
+-    core::context().runtime().api()->memcpy_sync(&result, max_idx->data(), sizeof(result), LLAISYS_MEMCPY_D2H);
++    core::context().runtime().api()->memcpy_sync(
++        &result, max_idx->data(), sizeof(result), LLAISYS_MEMCPY_D2H);
+     return result;
+ }
+ 
+diff --git a/src/ops/nvidia/common.cuh b/src/ops/nvidia/common.cuh
+index 04b8279..f5c6844 100644
+--- a/src/ops/nvidia/common.cuh
++++ b/src/ops/nvidia/common.cuh
+@@ -39,10 +39,10 @@ template <int MODE> __device__ inline void store(void *p, size_t i, float v) {
+ } // namespace llaisys::ops::nvidia::detail
+ 
+ // Preserve the existing default-stream launch and immediate error check.
+-#define LLAISYS_CUDA_LAUNCH(kernel, n, ...)                                                        \
+-    do {                                                                                           \
+-        kernel<<<((n) + 255) / 256, 256>>>(__VA_ARGS__);                                           \
+-        cudaError_t e = cudaGetLastError();                                                        \
+-        if (e != cudaSuccess)                                                                      \
+-            throw std::runtime_error(cudaGetErrorString(e));                                       \
++#define LLAISYS_CUDA_LAUNCH(kernel, n, ...)                                    \
++    do {                                                                       \
++        kernel<<<((n) + 255) / 256, 256>>>(__VA_ARGS__);                       \
++        cudaError_t e = cudaGetLastError();                                    \
++        if (e != cudaSuccess)                                                  \
++            throw std::runtime_error(cudaGetErrorString(e));                   \
+     } while (0)

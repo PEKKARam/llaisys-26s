@@ -1,10 +1,16 @@
 # LLAISYS 学习与求职方案：从读懂一次推理，到做出可复现的优化
 
-更新：2026-10-24。对象：已经写过 CUDA SGEMM、完成过本项目基础算子，但还不能独立解释模型前向的你。
+文档更新：2026-11-03；实验与测量仍引用 2026-11-02 的记录，本次未重跑实验。按此前反馈，你已经理解 Qwen2 `infer`、attention/GQA/RoPE/KV Cache 和权重加载；作业 1/2 的 Tensor 核心方法与七个 CPU 算子由你独立完成。当前重点是亲自复现、修改和讲解作业 3/4 的实现，并继续定位生成分歧。
+
+**本轮实际实现、数据与后续验收以[优化实验总表](docs/optimization/README.md)为准。** [KV Cache讲解](docs/optimization/KV_CACHE_AND_FORWARD.md)回答前向与缓存管理，[简历与面试主文档](docs/optimization/RESUME_AND_INTERVIEW.md)统一维护三条描述、32 个问答及指标解释；[一个月计划](RESUME_AND_30_DAY_PLAN.md)同步简历文案并保留求职安排及贡献来源。本文主要作为数学、代码地图与个人练习方法查阅，不另维护一套投递模板。
 
 这份方案的目标是：你能够从一个 token 的编号出发，讲清楚它经过哪些计算、数据放在哪里、为什么结果正确、哪里慢，以及你怎样通过实验让它变快。项目大不大、功能多不多，是次要的。
 
-**先给结论：保留现有引擎和测试，补齐理解与验证；不要再让 AI 一次性重写一套你不理解的系统。项目目标限定为单卡 NVIDIA CUDA 推理和一到两个优化，保留 CPU 作为参考与回归后端。** 你目前没有其他 GPU 平台资源，因此不实施双平台适配，也不把它列入后续学习或验收任务。
+**当前范围：单卡NVIDIA、单请求、batch=1；CPU保留参考。** 本轮已按你的授权完成八个CUDA算子优化、工作区/Cache执行优化、直接阶段计时和profiling，不实施其他GPU平台。接下来以自己复现和讲解为主，不要求从头再写一套系统。
+
+**最新验证（2026-11-02）：** 140个算子实验组合、57项CUDA边界、小模型GPU/CPU各36项回归、原有8个GPU算子脚本和Runtime检查通过。小模型对照主要检查预测 ID、缓存状态与接口行为，不代表 logits 逐元素一致。真实模型9条WikiText首token全一致；最多8个输出时仅5/9序列完全一致，仍有后续生成分歧，不能宣布HF完整生成对齐。已有第一层到最终logits诊断、整机/算子数据与真实Nsight证据，见[总表](docs/optimization/README.md)。
+
+**历史对照（2026-11-01）：** 当时0/9序列一致，第一层input Norm已有偏差，记录保留在[旧生成报告](docs/results/token_compare_20261101.md)和[旧张量报告](docs/results/tensor_compare_20261101.md)。不能把旧状态当今天的实现，也不能把数值设置不同的结果直接当同配置A/B。
 
 ## 阅读导航
 
@@ -12,21 +18,22 @@
 - 不明白作业 3、4 在干什么：[第 2 节](#2-把作业-3-4-翻译成具体工作)。
 - 想知道代码在哪里、实际完成了多少：[第 3 节](#3-当前仓库的真实地图与问题)。
 - 数学公式不会落地：[第 4 节](#4-前置知识只补当前用得上的部分)和[第 5 节](#5-从公式走到代码用小数字理解一层模型)。
-- 想有按天推进的安排：[第 6 节](#6-学习安排每一步都要留下可检查的产物)。
+- 近期按块练习与求职安排：[一个月计划](RESUME_AND_30_DAY_PLAN.md)；从头学习的历史路线保留在[第 6 节](#6-学习安排每一步都要留下可检查的产物)。
 - 找简单开源项目：[第 7 节](#7-开源项目按这个顺序学)。
 - 测试、benchmark、profiling 怎么改：[第 8 节](#8-测试与性能分析保留框架分阶段补齐)。
 - 简历做到什么程度：[第 9 节](#9-做到什么程度适合写简历)。
-- 本次删了什么、验证了什么：[第 10 节](#10-本次清理与验证记录)。
+- 早期删了什么、验证了什么：[第 10 节](#10-早期清理与验证记录历史快照)。
 
 ## 1. 今天先做什么
 
-先完成三个小任务，不要求今天看懂整个 Transformer。
+infer 和权重加载已理解。本轮代码与测量已由 AI 辅助落地，接下来按“短答 → 手算或画图 → 代码定位 → 复现实验 → 解释限制”做个人验收，不能仅把问答读顺就算掌握：
 
-1. 打开 [Python Qwen2](python/llaisys/models/qwen2.py)，只读 `generate()`。用中文写下：第一次传入什么；以后每次传入什么；什么时候停止。
-2. 打开 [C++ 模型](src/models/qwen2/model.cpp)，找到 `Model::infer()`。先圈出 `embedding`、层循环、`rms_norm`、最后的 `linear`、`argmax`，忽略内层计算。
-3. 用纸画出：`token IDs → embedding → 多层 Transformer → logits → argmax → 新 token ID`。在每个箭头旁写出 shape。暂时不知道的就留空，后面补。
+1. 先读Cache讲解并用`model.state`观察prefill/decode/reset，手算容量与有效长度。
+2. 独立跑Argmax V0/V2，解释两阶段归约；复现一次P64/N8回放，读懂TTFT/TPOT/分配统计。
+3. 沿着 Linear/Attention 记录解释“原来浪费在哪里、怎样改、测试证明什么”；用阶段数据区分算子与执行策略的共同收益，结合 Nsight 区分访存和同步等待。约 90% DRAM 吞吐只来自所测的一个 GEMV 尺寸。
+4. 对4条HF后续生成分歧继续做同输入teacher-forced定位；当前已有第一层和最终logits导出，decode逐步根因尚未闭环。简历先采用阶段性事实与自家基线回放指标，不写完全对齐或HF等质量加速。
 
-今天需要理解的一个例子：输入 `[10, 20, 30]`，第一次 `infer` 返回 `40`；第二次把 `[40]` 送入 `infer`，可能返回 `50`。第二次没有重新传 `[10, 20, 30]`，因为历史的 K、V 已经保存在模型里。
+框架底层读到能解释所有权、view/slice、分配释放、复制和同步即可；遇到具体瓶颈或资源问题再深入。作业 3/4 的实现与实验是近期投入中心。
 
 ### 1.1 当前机器可使用的命令
 
@@ -102,7 +109,7 @@ flowchart TD
     H --> I[Runtime 分配与拷贝]
 ```
 
-先走 `generate → Infer → Model::infer → ops::linear → nvidia::linear → linear_k`。走通之后再读其他算子，避免从头到尾按目录硬读。
+先走 `generate → Infer → Model::infer → ops::linear → nvidia::linear → linear_blas/cuBLAS`；`linear_k` 是保留的基础版本。走通之后再读其他算子，避免从头到尾按目录硬读。
 
 | 文件/目录 | 负责什么 | 第一遍读到什么程度 |
 | --- | --- | --- |
@@ -125,22 +132,22 @@ flowchart TD
 
 ### 3.2 已实现，不代表已经充分验证
 
-源码中可以确认：有 C++ Qwen2 前向、causal GQA、RoPE、KV Cache、CPU/NVIDIA 分发、八个 CUDA 算子、权重加载、argmax 生成、算子计时、模型粗粒度计时与报告脚本。
+源码中可以确认：有 C++ Qwen2 前向、causal GQA、RoPE、KV Cache、CPU/NVIDIA 分发、八个 CUDA 算子、权重加载、argmax 生成、算子设备微基准、同一请求的 prefill/decode 直接计时与报告脚本。
 
 当前范围和限制：
 
 - 单请求、单设备；不是连续批处理服务，也没有多 GPU 推理。
 - Python 模型加载器固定要求 BF16；C++ Meta 接受 F32/F16/BF16，不等于 Python 能加载这三种模型权重。
-- KV Cache 预分配在 GPU 上，但中间 Tensor 仍会在每层、每次调用时分配。
-- 自定义 CUDA kernel 是直接实现的基线；没有接 cuBLAS，也不是 FlashAttention。
+- KV Cache按运行容量预分配；E2复用中间工作区，热身后相同规模前向不再申请设备Tensor存储。
+- CUDA保留基础和优化分支，Linear已接cuBLAS；Attention复用中间结果，但不是FlashAttention。
 - 非连续 GPU Tensor 的 `contiguous()` 尚未支持。模型当前的主要 view/slice 不等于通用 GPU Tensor 能力。
-- 没有中间 logits/隐藏状态的常规导出接口；后端 `infer` 只返回 token ID。
-- 没有 NVTX 阶段标记，Nsight 仍然能采集 CUDA kernel/API，但不能自动知道哪个区间是第几层 attention。
+- 常规infer仍只返回ID；可选debug导出覆盖第0层主要阶段与最终logits，计时时必须关闭。
+- 模型benchmark已有prefill/decode NVTX与热身后采样开关；没有逐层NVTX。
 - CI 主要是 CPU 构建/测试；不能用绿色 CI 证明 NVIDIA 后端通过。现有模型 CI 还依赖在线下载真实权重。
 
 ### 3.3 代码审阅发现的具体问题
 
-下面区分“看代码已能确认”和“需要补测试/测量”。本次以清理和学习方案为主，这些功能问题没有顺手全部改掉，避免你收到一套新的黑盒。
+下面是2026-11-01审阅快照，保留问题缘由；**0/负输出长度、模型C API异常边界、token/head_dim检查、Context引用、Cache容量、直接阶段计时、八算子和末位置投影等已在后续修正。** 当前仍未支持任意非连续GPU Tensor，也未完成所有HF生成分歧归因。最新状态以优化总表为准。
 
 | 优先级 | 发现 | 对你的影响与下一步 |
 | --- | --- | --- |
@@ -148,7 +155,7 @@ flowchart TD
 | P0：接口边界 | C++ `CHECK_ARGUMENT` 抛异常，模型 C API 没有捕获和错误返回协议 | 非法输入可能终止 Python 进程，不能假设 `try/except` 能捕获；先设计状态码/错误消息，再加非法输入测试 |
 | P0：参数检查 | token ID 范围、RoPE 偶数 head_dim 等条件没有在模型入口完整检查 | 必须明确合法输入，避免非法 embedding 访问；检查应放在 CUDA launch 前 |
 | P1：资源 | `Context::setDevice` 的 `auto runtimes = _runtime_map[device_type]` 复制了 vector | 新建 Runtime 没写回 map，切换设备可能重复创建并泄漏；需要引用语义和生命周期回归 |
-| P1：内存 | Cache 容量直接使用 `max_position_embeddings=131072` | 当前配置 KV Cache 约 7 GiB；把模型支持上限和本次运行容量分开 |
+| P1：内存 | Cache 容量直接使用 `max_position_embeddings=131072` | 该配置 KV Cache 为3.5 GiB（更正旧文算术错误）；把模型支持上限和本次运行容量分开 |
 | 已修正：测试 | attention 参考实现的 mask 在 CPU 创建，数据在 query 设备 | 本次复跑确认报错；已加 `device=query.device`，GPU 用例通过 |
 | P1：测量 | 模型 TPOT 用两次独立 generate 的耗时相减估计，还用 `max(0, ...)` 截断 | 抖动可能掩盖错误；改成同一次生成中直接记录 prefill/decode |
 | P1：测量 | CUDA Event 在 PyTorch 当前流记录，LLAISYS kernel 默认流 launch | 当前默认流场景可能可用，但不能保证任意流下正确；显式统一流或建立依赖 |
@@ -158,6 +165,14 @@ flowchart TD
 | P2：构建 | `xmake/nvidia.lua` 声明的静态 target 与共享 target 都列出设备源码，构建关系值得整理 | 当前能构建不等于结构清楚；查依赖图、干净构建后再改，不直接删除平台构建文件 |
 
 `P0/P1/P2` 表示建议先后，不表示所有问题都会在当前合法输入下触发。测试通过也不会自动排除接口边界和资源生命周期问题。
+
+### 3.4 框架提供与个人作业的边界（2026-10-30 核查）
+
+以作业 1 首次提交 `74217f6` 的父提交 `7740d46` 为本地课程基线。`src/core/`、CPU Runtime、CPU add 示例、通用接口和测试主体来自框架。Tensor 核心视图/加载方法和七个 CPU 算子在作业 1/2 提交中补齐；Qwen2 原型与占位 Python 类已有，但完整 C++ 前向、KV Cache、权重映射、模型 ctypes 绑定及 CUDA Runtime/kernel 是后续工作。
+
+其中 `94b078c`、`f23b543` 新增的是 CPU 算子，CUDA kernel 出现在 `63d5f78`，与作业 3/4 的 AI 辅助经历对应。因此，之前把“独立完成七个算子”直接写为“独立完成七个 CUDA 算子”的描述不准确，此处已纠正。Git 能证明增改历史，手写/AI 来源需结合你的真实经历；不能从提交 author 自动推定。
+
+详细文件、提交证据、模型头文件已有与新增部分，以及框架所需理解深度，见 [短期计划第 0 节](RESUME_AND_30_DAY_PLAN.md)。AI 辅助实现可以作为你负责的项目工作，但应能解释、验证和修改；不把“看懂”自动写成“独立手写/设计”或已完成实验。
 
 ## 4. 前置知识：只补当前用得上的部分
 
@@ -242,7 +257,7 @@ variance = (x.float() ** 2).mean(dim=-1, keepdim=True)
 y = x.float() * torch.rsqrt(variance + eps) * weight.float()
 ```
 
-上面用 FP32 表达数学参考，真实后端还要考虑回写 BF16 的时机。GPU 优化的问题是：如何让一个 warp/block 合作求一行的平方和？现有版本一行由一个线程完成，decode 时行数为 1，尤其值得测量。
+上面用 FP32 表达数学参考，真实后端还要考虑回写 BF16 的时机。基础 V1 一行由一个线程完成；当前 V2 让一个 block 协作，每个线程累加部分平方和，先做 warp 内归约，再经共享内存合并各 warp 的部分和。要解释的是如何把同一行分给线程，以及归约后的结果怎样供整行输出使用，详见 [RMSNorm 记录](docs/optimization/rms_norm.md)。
 
 ### 5.5 Q/K/V 与 GQA：多个 query 头共用一组历史 K/V
 
@@ -314,6 +329,8 @@ out_{t,d}=\sum_{s\text{ 可见}}p_{t,s}v_{s,d}
 
 decode 的 `T=1,S=4` 时，唯一 query 可看全部 4 个位置。若错误地套一个从左上角开始的普通下三角 mask，就只剩第一个位置可见。仓库 kernel 的 `limit=KL-Q+qp+1` 正是在处理这个偏移。
 
+基础实现为每个输出通道重复计算同一份 QK 打分与 softmax；当前 V2 拆成 QK、softmax、PV 三步，并复用分数存储。收益来自消除重复工作和并行归约，代价是保留 `QL×HQ×KL` 大小的中间分数；它不是 FlashAttention 的分块融合算法。实现与实测见 [Attention 记录](docs/optimization/self_attention.md)。
+
 ### 5.8 可以直接运行的小实验：验证 GQA 和 cache 切片
 
 以下只依赖 PyTorch，在 CPU 上运行，不需要模型文件。它固定 Q/K/V，验证“完整 causal attention”和“prefill 后读取历史 K/V”的结果一致；**它不验证权重加载、RoPE 或完整 Transformer**。
@@ -383,7 +400,7 @@ hidden = post_attn + down_proj(silu(gate) * up)
 
 ### 5.10 Logits、argmax 和生成循环
 
-最后做 RMSNorm，再用 LM head 把 `[T,H]` 映射到 `[T,V]`。logits 是词表中每个候选 token 的分数。生成只取最后一个输入位置的那一行。
+概念上，最后做 RMSNorm，再用 LM head 把每个位置的 hidden 映射到词表分数。当前 E2 执行路径先取最后一个位置，只计算 `[1,H] → [1,V]`；E1 则算 `[T,V]` 后取最后一行。这里只需要最后一个位置预测下一个 token，所以前者减少了 prefill 的冗余词表投影；前面的 Transformer 层仍需处理全部 prompt。logits 是词表中每个候选 token 的分数。
 
 argmax 返回分数最大的 token ID。为做 argmax 不必先算 softmax，因为 softmax 保持大小顺序。EOS 是结束 token，生成它后停止。
 
@@ -407,13 +424,13 @@ infer([50])       → 返回60，缓存长度=5
 \mathrm{bytes}=2\times L\times C\times Nkv\times D\times b
 \]
 
-2 代表 K 和 V，C 是实际分配容量，b 是每个元素字节数。当前 `L=28,C=131072,Nkv=2,D=128,b=2`，结果是 `7,516,192,768 bytes = 7 GiB`。若容量为 2048，则是 112 MiB。这还不包括权重、临时 Tensor、CUDA 上下文等。
+2 代表 K 和 V，C 是实际分配容量，b 是每个元素字节数。当前默认 `L=28,C=2048,Nkv=2,D=128,b=2`，结果是 `58,720,256 bytes = 56 MiB`。若按模型位置上限取 `C=131072`，则是 `3,758,096,384 bytes = 3.5 GiB`。**旧版这里多算了一倍，已按公式和 model.state 实测更正。**这还不包括权重、临时 Tensor、CUDA 上下文等；容量改变也不等于同样上下文长度下压缩 KV。
 
-第一项内存优化可做成：为用户提供独立 `cache_capacity`，不超过模型位置上限；创建后端时按该容量分配，并让生成长度检查使用它。不要直接改原模型 config 冒充新的模型上限，也不必为了省这块内存立即引入 PagedAttention。
+此项已经实现：为用户提供独立 `cache_capacity`，不超过模型位置上限；创建后端时按该容量分配，并让生成长度检查使用它。不要直接改原模型 config 冒充新的模型上限，也不必为了省这块内存立即引入 PagedAttention。
 
 ## 6. 学习安排：每一步都要留下可检查的产物
 
-建议按每周 10～15 小时安排 6～8 周；这是学习预算，不是完成保证。时间不够就延长，按验收结果推进，不按日历强行跳阶段。
+以下是最初面向从头学习的历史参考路线，**不再作为你当前的逐周任务**。你已完成模型前向与权重加载理解，后续诊断导出、直接计时、优化和 profiling 也已落地；以下六周中“待增加”“当前朴素实现”等表述均指早期阶段。近期按 [一个月计划](RESUME_AND_30_DAY_PLAN.md) 做个人复现与面试练习，并行推进真实模型同前缀数值归因，不从头重复开发。
 
 ### 第 1 周：把数学和 shape 接起来
 
@@ -520,15 +537,17 @@ model.layers.0.self_attn.k_proj.weight
 
 | 工具类型 | 回答什么 | 当前仓库 | 你的下一步 |
 | --- | --- | --- | --- |
-| 正确性测试 | 算得对吗？错误输入怎样处理？ | `test/ops`、`test_tensor`、`test_runtime`、`test_infer` | 保留，补真实 shape、边界和小模型对照 |
-| Benchmark | 在固定条件下耗时多少？ | `benchmark_ops.py`、`benchmark_infer.py`、JSONL/report | 保留数据格式和入口，修阶段测量、补元数据 |
-| Profiling | 为什么慢？时间花在哪里？ | 已有命令文档，源码缺少 NVTX 标记 | 先用 nsys 采样，再加入范围标记，最后用 ncu 看热点 |
+| 正确性测试 | 算得对吗？错误输入怎样处理？ | 算子/Runtime/Tensor、57 项 CUDA 边界、小模型 CPU/GPU 各 36 项回归及真实模型对照 | 复现已有检查，优先定位 4 条真实模型后续分歧 |
+| Benchmark | 在固定条件下耗时多少？ | 算子 CUDA Graph 设备微基准、模型同请求直接计时、JSONL 原始样本 | 读懂并复现已有数据，区分回放、greedy 和不同统计量 |
+| Profiling | 为什么慢？时间花在哪里？ | 已有 prefill/decode NVTX、热身后采样入口和真实 nsys/ncu 报告 | 先解释整机时间线，再解释所测 GEMV 的硬件指标 |
 
 现有 `test/test_utils.py` 已用 `perf_counter`、CUDA Event、warmup/repeat、统计分位数和 JSONL。旧文档说“还没有这些能力”已经过时。现有算子 benchmark 会调用测试脚本，所以结构上还不是完全解耦，但没有必要为了目录漂亮就推倒重写。
 
 ### 8.2 正确性应该补什么
 
-| 层级 | 优先新增用例 | 为什么 |
+以下是检查覆盖面的索引；本轮边界与小模型检查已覆盖其中多项，不把整张表重新列为开发待办。新增测试应由具体缺口或失败驱动，已有命令与实测范围见[优化总表](docs/optimization/README.md)。真实模型的同前缀逐步诊断仍未完成。
+
+| 层级 | 应核对的用例 | 为什么 |
 | --- | --- | --- |
 | Linear | 有/无 bias，M=1、短 prefill、真实 H/I/V，非整 tile 尺寸 | 课堂小矩阵通过不能证明模型尺寸和优化边界正确 |
 | Reduction | argmax 并列最大、全负输入；RMSNorm 小值、非整 warp 长度 | 线程合并顺序与边界容易出错 |
@@ -541,6 +560,8 @@ model.layers.0.self_attn.k_proj.weight
 误差记录建议包含最大绝对误差、平均绝对误差、相对误差（分母接近零要保护）、NaN/Inf 检查，以及 token 首个不同的位置。容差应按 dtype、算子与数值范围确定，没有一组适合所有算子的魔法数字。
 
 ### 8.3 算子 benchmark：先保证测到的是目标算子
+
+本节保留旧benchmark_ops的改进背景；本轮实际数据使用新增`cuda_experiments.py`和C++ CUDA Graph设备计时，详见优化总表。小幅整机收益仍需更严格环境控制，不能只看一轮跨进程消融。
 
 可以直接用已有入口：
 
@@ -555,7 +576,7 @@ PYTHONPATH=python .venv/bin/python benchmark/benchmark_ops.py \
   --output benchmark/results/ops_nvidia.md
 ```
 
-后续需要改进：
+理解旧脚本局限时，重点核对以下六点。新的 `cuda_experiments.py` 已提供真实形状、固定种子和设备计时，旧入口不能与新入口的结果混算加速比：
 
 1. **固定输入与 shape**：增加随机种子和选择单个 shape/dtype 的 CLI 参数；现有脚本会遍历内置用例。纳入真实模型形状，而不只是很小的教学尺寸。
 2. **明确计时口径**：GPU Event 时间与 host API 延迟分开。微小 kernel 从 Python 发射，设备可能在两个 Event 之间等待 CPU 提交后续工作，Event 不是天然等于纯 kernel 指令时间。
@@ -566,11 +587,9 @@ PYTHONPATH=python .venv/bin/python benchmark/benchmark_ops.py \
 
 SGEMM 常见计算量估算为 `2MNK FLOPs`，除以秒数和 `10^12` 得到 TFLOP/s。decode 的 M 通常为 1，接近矩阵向量乘，权重复用少，优化重点和大 M prefill 不同。若只考虑 BF16 权重读流量，其理想计算强度约为 `2MNK/(2NK)=M FLOP/byte`；实际还要算输入、输出、cache 行为，不能只靠这个估算判定瓶颈。
 
-### 8.4 模型 benchmark：这是最应该改的一块
+### 8.4 模型 benchmark：已改成同请求直接计时
 
-当前逻辑是：先生成 1 个 token 测 TTFT，再重新生成 N 个 token 测总时间，然后相减估计 decode。两次请求的 warmup、内存分配和缓存状态不同，差值可能失真，甚至被截断为 0。
-
-建议给 Python 包装器增加独立 `reset/prefill/decode` 方法，底层复用已存在的 `Reset/Infer` C API；`generate()` 也复用这些方法。这是下一阶段接口方案，**当前尚未提供这些 Python 公共方法**。第二种方案是在 `generate` 内加入默认关闭的统计回调，避免维护两套生成循环。
+旧版两次独立generate相减估计decode的方法已移入历史快照。现在`benchmark_infer.py`在同一次请求直接记录prefill与各次decode，Python公开`reset/prefill/decode/state/close`，`generate`复用这些方法。支持真实greedy与固定token回放，两者分别标记。实际测量和内存范围见[优化总表](docs/optimization/README.md)。
 
 同一次请求的测量流程：
 
@@ -598,81 +617,70 @@ infer(prompt_ids) → 第一个新 token
 - 若没有单独测到纯 prefill 前向，应写“prefill 调用含 LM head/argmax”，不要把 TTFT 直接标成纯 prefill 时间。
 - 总生成吞吐 `N/总时间` 与稳态 decode 吞吐不同，不能混用。
 
-性能 workload 可以使用固定 token 序列，但必须说明合成输入和 EOS 提前停止。真实文本测试与固定长度性能测试分开；若添加忽略 EOS 的 benchmark 模式，要显式标记，默认用户生成行为保持 EOS 停止。
+当前 `replay` 模式使用固定输入，并在每次 decode 喂入预定 token、忽略 EOS；`greedy` 模式把自身预测喂回，遇 EOS 停止。前者用于保证各版本经历相同前缀与长度，后者用于观察实际生成。回放能比较固定工作量下的执行性能，不能证明模型质量已经一致。
+
+简历数据来自算子 V1/E1 到 V2/E2 的综合变化：不仅换了算子，还改变了工作区、KV 写入和末 token 投影。基线 warmup1/repeat5，最终复测 warmup3/repeat21；应说 GPU、模型、精度和 workload 一致，同时披露采样不同。分阶段表用统一 warmup1/repeat5 展示过程，21 次复测用于查看最终状态的波动，不能把两轮当成全部条件相同的配对实验。
 
 ### 8.5 显存与结果文件怎么记录
 
 `torch.cuda.max_memory_allocated()` 统计的是 PyTorch 分配器管理的内存，无法完整覆盖本项目直接 `cudaMalloc` 的内存。不能把这个数字标成整个引擎峰值显存。
 
-先为 LLAISYS allocator 加 `current_bytes/peak_bytes` 统计，明确其范围为引擎管理的 device allocations；权重、缓存、workspace 分项记录。结合 `cudaMemGetInfo` 或系统侧数据观察设备总体占用，注明后者会受其他进程和采样频率影响。
+LLAISYS allocator 已提供 `current_bytes/peak_bytes/allocations` 统计，模型 state 已分别报告权重、缓存和 workspace 字节数。这个统计器覆盖框架设备 Tensor 存储，不含原始 CUDA scratch、cuBLAS 内部资源、CUDA context 或 CPU view 对象。热身后相同规模前向的分配增量为 0，不等于整个进程完全不再分配内存。若另用系统侧数据观察设备总体占用，应注明其他进程和采样频率的影响。
 
 每条结果至少有：commit、是否有未提交修改、GPU 型号、驱动、Toolkit 与 PyTorch CUDA 版本、编译模式/架构、依赖版本、模型 revision 或文件 hash、dtype、batch、prompt/output 实际长度、种子、warmup/repeat、计时方法、正确性结果。`torch.version.cuda` 不是本项目编译时 nvcc 版本。
 
-JSONL 追加输出和 `report.py` 已可保留；增加原始样本或每步时间方便复查。小规模可复现报告放 `docs/results/` 等受版本管理目录，原始 trace/大量 JSONL 留在已忽略的输出目录。现在 `benchmark/results/` 的生成文件被 Git 忽略，不要以为保存进去就自动进入提交。
+JSONL 已保存原始样本和 decode step 时间，正式记录位于 `docs/optimization/results/`；大体积 trace 位于本机 `cache/profiles/`。个人复现使用新输出文件，避免混入原始记录。当前 `benchmark/results/` 的生成文件被 Git 忽略，不要以为保存进去就自动进入提交；未提交的工作区源码也不能只靠 HEAD 复现，需结合报告中的源码与库校验信息。
 
 ### 8.6 现在就能做的 profiling
 
-不需要先重写引擎，Nsight Systems 可以直接观察现有 CUDA 程序。NVTX（命名时间范围的标记）是让 trace 更好读的补充，并非采集的前提。参考 [NVIDIA Nsight Systems 用户指南](https://docs.nvidia.com/nsight-systems/UserGuide/index.html)。
+当前已经采集过整机 nsys 与典型 GEMV 的 ncu 记录。先读[实验总表的 profiling 证据](docs/optimization/README.md)和原始摘要，再按需要复现。NVTX 是命名时间范围的标记；现有入口已标注 prefill/decode，尚未增加逐层 attention/MLP 标记。它帮助读时间线，本身不负责计时正确性。
 
-先从一个算子开始，确认工具能工作：
-
-```bash
-mkdir -p profile/nsys
-PYTHONPATH=python nsys profile \
-  --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
-  --output=profile/nsys/linear_first \
-  .venv/bin/python test/ops/linear.py --device nvidia
-
-nsys stats profile/nsys/linear_first.nsys-rep
-```
-
-这个脚本里也有 PyTorch 参考调用和初始化，trace 不是纯 LLAISYS。找本仓库的 `linear_k`，不要把 cuBLAS、随机数初始化等 kernel 当成自己的耗时。用不同输出名避免覆盖已有报告。
-
-然后采一个很短的模型 workload：
+整机只捕获热身后的一次 P64/N8 回放；个人输出使用新名字，避免覆盖原报告：
 
 ```bash
-PYTHONPATH=python nsys profile \
-  --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
-  --output=profile/nsys/qwen2_short \
+mkdir -p cache/profiles
+nsys profile \
+  --trace=cuda,nvtx --sample=none --cpuctxsw=none \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  --output=cache/profiles/interview_engine \
   .venv/bin/python benchmark/benchmark_infer.py \
-  --model ./DeepSeek-R1-Distill-Qwen-1.5B --device nvidia \
-  --prompt-tokens 8 --output-tokens 3 --warmup 1 --repeat 1
+  --prompt-tokens 64 --output-tokens 8 --mode replay \
+  --warmup 1 --repeat 1 --nvtx --profile
+nsys stats --report cuda_gpu_kern_sum,cuda_api_sum,nvtx_sum \
+  cache/profiles/interview_engine.nsys-rep
 ```
 
-现有 benchmark 会为估算指标调用多次 generate，trace 也会包含这些请求。先认清初始化、加载和多个请求，再判断热点。第一轮只回答：
+本次请求包含 1 次 prefill 和 7 次 decode。当前主路径 Linear 已调用 cuBLAS，厂商 kernel 属于引擎执行的一部分；旧 `linear_k` 是基础版本，不能只过滤这个名字就声称测到了优化版。读图时先回答：
 
 1. GPU 时间最多的 kernel 是哪几个？
 2. 每个 token 是否出现大量 `cudaMalloc/cudaFree`？
 3. GPU 空档期间 CPU 在做什么？同步、分配，还是提交任务？
 4. H2D/D2D/D2H 拷贝的次数、字节数是否符合预期？
 
-下一步用 NVTX 标记 `prefill/decode/layer/attention/mlp/lm_head`，并限制采集到 warmup 后的目标区间。CPU-only 构建中的标记应为空操作。
+已测整机中厂商矩阵运算约占 GPU kernel 时间的 92%；这个分母不含全部 CPU 开销。cudaMemcpy 的 CPU API 区间约 61.7 ms，但设备实际复制合计约 15.5 μs，前者包含等待已有 GPU 工作完成，不能直接解释成 PCIe 传输瓶颈。
 
-找到热点后，才使用 Nsight Compute。示例过滤本仓库 Linear kernel；参数以本机 `ncu --help` 为准。官方支持 kernel 过滤和 launch 数量控制，见 [Nsight Compute CLI 文档](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html)。
+再看一个无 bias 的 BF16 Linear：`X[1,1536] × W[8960,1536]ᵀ`。已有独立入口，避免把 PyTorch 参考与初始化混进热点选择：
 
 ```bash
-mkdir -p profile/ncu
-PYTHONPATH=python ncu \
-  --set basic --kernel-name-base demangled \
-  --kernel-name 'regex:.*linear_k.*' --launch-count 1 \
-  --export profile/ncu/linear_first \
-  .venv/bin/python test/ops/linear.py --device nvidia
+ncu --set basic --launch-count 1 \
+  --export cache/profiles/interview_decode_linear \
+  .venv/bin/python benchmark/profile_decode.py
 ```
 
-此时只看一个 kernel：执行时长、SM 利用、显存吞吐、occupancy（活跃 warp 相对硬件上限的比例）。指标低不一定是“block 太小”：也可能工作量太小、访存等待、重复计算、依赖链或 profiler 采集方式造成。对照代码逐个提出解释。
+此时看执行时长、SM 利用、显存吞吐、occupancy（活跃 warp 相对硬件上限的比例）。已有记录的 DRAM 吞吐约 89.8%、occupancy 约 23.7%，支持**这个尺寸**偏访存受限的判断；不能推广为所有 Linear，也不能仅凭低 occupancy 就决定减少寄存器。参数含义可查本机帮助及报告所链接的 Nsight 官方文档。
 
 如果报告 `ERR_NVGPUCTRPERM`，是性能计数器权限限制；如果报告驱动/GPU/WSL 组合不支持，是工具环境问题。保留错误和版本，不通过放宽正确性或伪造指标解决。
 
 Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler 的条件下测量。不要从一次 ncu 重放的耗时直接推导整模型吞吐。
 
-### 8.7 推荐的最小改造顺序
+### 8.7 现阶段的最小个人验收顺序
 
-1. 已有测试继续保留，先补小模型、cache/reset 和接口边界回归。
-2. 固定依赖环境与参考生成规则；测试和性能 workload 有独立入口。
-3. 同一次请求内统计 TTFT/decode，保存原始样本，修正 EOS/实际长度口径。
-4. 给算子 benchmark 增加真实 shape、固定种子、明确流和公平参考实现。
-5. 添加 NVTX 与 allocator 内存统计。
-6. 用一轮 nsys/ncu 证据确定优化点，然后修改 CUDA 或内存管理。
+1. 跑已有算子/小模型检查，说明容差测试、状态测试和真实模型生成对照分别证明什么。
+2. 记录默认 HF 对照的首 token 9/9、8-token 序列 5/9；仅参考端禁用 Lt 的 8/9 是控制实验，不替换默认结果。
+3. 复现同请求 TTFT/decode 计时，找到原始样本、实际输出数与统计方法。
+4. 选择 Argmax 或 Attention，手算索引并定位代码，再在理解范围内改一个合法参数后验证。
+5. 解释工作区复用、allocator 统计范围与 NVTX 时间线，不重复开发已存在的统计或标记。
+6. 对一条生成失败输入补同前缀诊断，明确这项根因定位尚未完成；记录已排除什么、仍无法判断什么。
 
 不需要第一阶段就重写 pytest 框架、做完整监控平台或搞每次 CI 自动性能打分。性能回归需要固定硬件和稳定 workload，否则阈值告警容易只反映环境噪声。
 
@@ -682,11 +690,13 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler �
 
 | 层次 | 可展示内容 | 怎样定位 |
 | --- | --- | --- |
-| 基础实践 | 自己完成的 Tensor/七个 CUDA 算子、现有测试结果，能讲清算法和实现 | 可以写成课程/实践项目；不要称完整高性能引擎 |
+| 基础实践 | 自己完成的 Tensor 核心方法/七个 CPU 算子、后续 CUDA 实现与现有测试结果，能讲清算法和实现 | 可以写成课程/实践项目；不要称完整高性能引擎 |
 | 完整推理 | 理解 C++ Qwen2、权重装载、GQA/RoPE/KV Cache；小模型与真实模型正确性有记录 | 可以作为单卡推理引擎项目，明确来源和支持范围 |
 | 推理优化/算子岗位推荐目标 | 在上一层基础上，完成可靠 benchmark、一次有证据的性能定位、至少一个亲自完成并能复现的优化 | 项目有辨识度；能从公式、布局、kernel 讲到端到端收益 |
 
 **建议以第三层作为你的投递目标。** 没有统一的“必须达到多少 tokens/s 才能写简历”标准。GPU、模型、长度、dtype 不同，裸数字没有可比性。一个知道为什么快、在哪些 shape 不快的优化，比写十个没验证的高级功能更有说服力。
+
+目前项目已有第三层涉及的代码和实验材料，个人是否达到这一层仍要靠复现、修改与讲解验证。真实模型还有 4 条生成分歧，不妨碍整理已验证的功能、固定回放性能与排查过程，但必须把这些阶段性事实和“完整生成正确性已闭环”分开。
 
 本项目不计划第二个平台。量化、多卡、continuous batching 也不是进入简历的硬门槛；先做好单卡 NVIDIA CUDA 正确性与优化闭环。简历明确写支持 CPU/NVIDIA，不声称完整实现了原课程的双平台要求。
 
@@ -703,8 +713,10 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler �
 
 | 版本 | GPU/dtype | prompt/output | 算子中位时延 | 模型 TTFT | TPOT | 引擎峰值分配 | 正确性 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| baseline commit | 填实际值 | 填实际值 | 实测 | 实测 | 实测 | 标明统计范围 | 用例与结果 |
-| optimized commit | 相同 | 相同 | 实测 | 实测 | 实测 | 同一统计方式 | 相同用例 |
+| baseline 版本及源码/库标识 | 填实际值 | 填实际值 | 实测 | 实测 | 实测 | 标明统计范围 | 用例与结果 |
+| optimized 版本及源码/库标识 | 相同 | 相同 | 实测 | 实测 | 实测 | 同一统计方式 | 相同用例 |
+
+原始记录中另列 warmup/repeat 和所有样本。当前基线为 warmup1/repeat5，简历引用的最终复测为 warmup3/repeat21；应照实注明，不能只写“其他所有配置相同”。当前未提交源码不能仅由 HEAD 标识，需连同保存的源码与库校验记录定位。
 
 加速比 `baseline_time / optimized_time`；时延下降比例 `(baseline_time - optimized_time) / baseline_time`。二者不是同一个百分数。
 
@@ -712,21 +724,35 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler �
 
 ### 9.3 你和 AI 的贡献应怎么表述
 
-项目来源、实际作者和个人贡献要分开。可以写“基于 LLAISYS 教学框架，完成……”，不要把课程框架称为全部从零自研。你独立完成的七个算子可以明确写；作业 3、4 中 AI 生成的部分，在你尚未理解、测试、修改前，不宜表述为独立设计实现。
+项目来源、实际作者和个人贡献要分开。可以写“基于 LLAISYS 教学框架，完成……”，不要把课程框架称为全部从零自研。你独立完成的 Tensor 核心方法和七个 CPU 算子可以明确写；CUDA 和模型部分是后续补充，含 AI 辅助，适合描述为基于框架完成/完善后端，不宜表述为独立手写全部 CUDA 算子。
 
-用 AI 不会自动让项目失去价值。需要补的是所有权感对应的实际能力：你能解释设计、发现缺陷、独立复现问题并改进。建议从现在起每次学习或优化都保存小 commit，并写三句话：问题、原因、验证。
+用 AI 不会自动让项目失去价值。需要补的是实际维护能力：你能解释设计、发现缺陷、独立复现问题并改进。建议每次学习或优化都保存可复查的 diff 或 commit，并写三句话：问题、原因、验证。只有亲自做过的部分才用第一人称描述具体排错和修改过程。
 
 现在可以使用的保守表述，须与你自己确认的贡献一致：
 
-> 基于 LLAISYS 教学框架实现 7 个基础算子的 CUDA 版本，覆盖 FP32/FP16/BF16，并与 PyTorch 参考结果对照验证；进一步学习和完善 Qwen2 单卡推理链路。
+> 基于 LLAISYS 教学框架，独立实现 Tensor 核心方法和 7 个 CPU 算子，后续完善 Qwen2 模型与 NVIDIA CUDA 后端；现有算子用例覆盖 FP32/FP16/BF16，并进行 PyTorch 数值对照。
 
-完成推荐目标后，可使用下面的模板；方括号内必须替换为真实结果，没有完成的能力直接删掉：
+当前三条投递文案已经有实测数据，以[简历与面试主文档](docs/optimization/RESUME_AND_INTERVIEW.md)为维护基准；[短期计划第 2 节](RESUME_AND_30_DAY_PLAN.md)同步展示，不再等待填写一套未来 benchmark 模板。
 
-> 基于 C++/CUDA 的 LLAISYS 框架完善 Qwen2 单卡推理，验证 BF16 权重加载、GQA、RoPE 和 KV Cache，建立逐层与端到端正确性回归。通过 Nsight 定位 [具体瓶颈]，实现 [具体优化]；在 [GPU、模型、输入/输出长度] 下，将 [算子时延/TTFT/TPOT] 从 [A] 降至 [B]，并记录正确性与显存变化。
+介绍成绩时先说实测 DeepSeek-R1-Distill-Qwen-1.5B、RTX 5060 Ti、BF16、batch=1、P64/N8 固定回放及自家朴素基线，再说算子与执行策略的共同收益。不要填写预测加速比，不把 PyTorch allocator 的显存当引擎总显存，不把有限用例通过写成“完整支持所有 Qwen2 模型”。
 
-不要填写预测加速比，不把 PyTorch allocator 的显存当引擎总显存，不把本机有限用例通过写成“完整支持所有 Qwen2 模型”。
+### 9.4 用五步练习替代背问答
 
-### 9.4 面试前能回答这些问题，就有实质掌握
+主文档的 32 个问答用于理解与查证；练习时不必一次背完。每个主题按下面顺序完成，前一步能说清再展开下一步：
+
+| 步骤 | 要做的事 | 可以检查的产物 |
+| --- | --- | --- |
+| 30 秒短答 | 先回答做什么、为什么需要、当前范围 | 不看稿能说出两三句，避免先堆术语 |
+| 手算或画图 | 用小尺寸推一遍 shape、索引、cache 长度或计时公式 | 一张可复查的图或计算过程 |
+| 代码定位 | 找到具体函数与关键分支，解释输入/输出及存储去向 | 文件、函数名与自己的注释；不靠背行号 |
+| 复现实验 | 运行已有命令；在理解后改一个合法参数并重新验证 | 命令、环境、原始输出与变化原因 |
+| 解释限制 | 说明通过了哪些用例，以及哪些结论仍缺证据 | 一条支持结论和一条不能推出的结论 |
+
+例如 Argmax：短答是“用多个 block 分摊大词表扫描，再合并候选”；手算 `ceil(151936/1024)=149` 个候选；代码中找到局部归约和最终合并；复现并核对值和索引；最后解释两次 launch 为什么不适合所有小行，以及算子快很多为何不等于整机同倍数加速。
+
+先完成四块练习：推理/Cache（主问答 Q2～Q13、Q28）、算子（Q14～Q18）、测量/资源（Q22～Q30）、正确性/项目口述（Q19～Q21、Q31～Q32）。每块约 45～60 分钟起步，实验运行与补课另留时间；具体任务和完成标准见[短期计划第 3 节](RESUME_AND_30_DAY_PLAN.md)。练习过程中记录自己的结果，不把 AI 已完成的实验过程直接改写成个人经历。
+
+### 9.5 面试前的十二个自测问题
 
 1. 输入一个 prompt，Python、C API、C++ 和 CUDA 各做什么？为什么需要这些层？
 2. Q、K、V 分别怎样计算？Qwen2 中它们的 shape 为什么不同？
@@ -737,17 +763,19 @@ Profiler 会扰动执行；优化前后正式 benchmark 要在不挂 profiler �
 7. 一个 Tensor view/slice 是否复制数据？如果不复制，生命周期怎么保证？
 8. 为什么 prefill 与 decode 的 Linear 应分开优化？SGEMM 经验有哪些能用，哪些要调整？
 9. CUDA Event 与 host timer 测到什么？流不一致会怎样？
-10. kernel 快 2 倍，为什么整模型没有快 2 倍？你的数据如何解释？
+10. kernel 快 2 倍，为什么整模型没有快 2 倍？V1/E1、V2/E1、V2/E2 分别改变了什么，简历总收益包含哪些改动？
 11. 优化后 token 不同，怎样定位首个数值偏差？哪些差异可能是舍入，哪些是逻辑错误？
 12. 你的个人改动在哪里？有什么失败实验、支持边界和下一步计划？
 
-遇到不会的，不必继续加功能掩盖它。回到对应小实验，直到能够用具体数字和代码回答。
+回答不是终点。随机挑一题让自己连续解释“为什么”“代码在哪里”“证据是什么”“换一个输入还成立吗”。遇到不会的，回到对应小实验；尚未解决的真实模型同前缀诊断明确说是下一项工作，不用假定它已经有结论。
 
-## 10. 本次清理与验证记录
+## 10. 早期清理与验证记录（历史快照）
+
+以下按当时清理/拆分阶段记录，不作为2026-11-02的最新测试状态；最新结果见优化总表。
 
 ### 10.1 删除与保留的依据
 
-清理前 Git 工作区干净，基准提交为 `e947d93`。本次没有创建提交；可通过 `git diff` 审阅。
+以下记录首次清理时的状态：当时 Git 工作区干净，清理基准提交为 `e947d93`；该记录不代表当前工作区状态，也不同于贡献来源核查使用的课程基线 `7740d46`。后续重构已进入 `acf0b54`；本次 2026-10-30 更新未创建提交。
 
 | 内容 | 本次处理 | 原因 |
 | --- | --- | --- |

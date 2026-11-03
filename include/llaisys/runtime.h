@@ -19,8 +19,10 @@ __C {
     typedef void *(*malloc_host_api)(size_t);
     typedef void (*free_host_api)(void *);
     // Memory copy
-    typedef void (*memcpy_sync_api)(void *, const void *, size_t, llaisysMemcpyKind_t);
-    typedef void (*memcpy_async_api)(void *, const void *, size_t, llaisysMemcpyKind_t, llaisysStream_t);
+    typedef void (*memcpy_sync_api)(void *, const void *, size_t,
+                                    llaisysMemcpyKind_t);
+    typedef void (*memcpy_async_api)(void *, const void *, size_t,
+                                     llaisysMemcpyKind_t, llaisysStream_t);
 
     struct LlaisysRuntimeAPI {
         get_device_count_api get_device_count;
@@ -42,6 +44,15 @@ __C {
 
     // Llaisys API for switching device context
     __export void llaisysSetContextRuntime(llaisysDeviceType_t, int);
+
+    struct LlaisysAllocatorStats {
+        size_t current_bytes, peak_bytes, allocations;
+    };
+    // Counts allocations owned by the framework Tensor allocator only, not
+    // cuBLAS internal workspaces, operator scratch, or the CUDA context.
+    __export int llaisysGetAllocatorStats(llaisysDeviceType_t, int,
+                                          LlaisysAllocatorStats *);
+    __export int llaisysResetAllocatorPeak(llaisysDeviceType_t, int);
 }
 
 #endif // LLAISYS_RUNTIME_H

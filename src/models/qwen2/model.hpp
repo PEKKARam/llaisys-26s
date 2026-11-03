@@ -5,6 +5,8 @@
 #include "../../llaisys/llaisys_tensor.hpp"
 
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace llaisys::models::qwen2 {
@@ -17,6 +19,10 @@ private:
     llaisysDeviceType_t _device;
     int _device_id;
     size_t _cached_len{0};
+    int _engine_version{2};
+    std::unordered_map<std::string, tensor_t> _workspace;
+    size_t _workspace_allocations{0};
+    std::vector<int64_t> _host_positions;
 
     LlaisysQwen2Weights _weights{};
     std::vector<tensor_handle_t> _owned_tensors;
@@ -43,16 +49,16 @@ private:
     void allocateWeights();
     void allocateCache();
     void exposeWeightArrays();
+    tensor_t temporary(const char *name, const std::vector<size_t> &shape,
+                       llaisysDataType_t dtype);
 
 public:
-    Model(
-        const LlaisysQwen2Meta &meta,
-        llaisysDeviceType_t device,
-        const int *device_ids,
-        int ndevice);
+    Model(const LlaisysQwen2Meta &meta, llaisysDeviceType_t device,
+          const int *device_ids, int ndevice);
 
     LlaisysQwen2Weights *weights();
     void reset();
+    LlaisysQwen2State state() const;
     int64_t infer(const int64_t *token_ids, size_t ntoken);
 };
 

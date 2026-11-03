@@ -12,8 +12,9 @@
 namespace llaisys::core {
 class Context {
 private:
-    std::unordered_map<llaisysDeviceType_t, std::vector<Runtime *>> _runtime_map;
-    Runtime *_current_runtime;
+    std::unordered_map<llaisysDeviceType_t, std::vector<Runtime *>>
+        _runtime_map;
+    Runtime *_current_runtime{nullptr};
     Context();
 
 public:

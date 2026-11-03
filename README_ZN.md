@@ -11,6 +11,14 @@
 
 当前个人项目范围为 CPU 参考后端与 NVIDIA CUDA 单卡推理；不计划其他 GPU 平台适配。CUDA 算子已按 `src/ops/<算子>/nvidia/` 拆分，与 `cpu/` 并列。
 
+## 本轮CUDA优化与实验
+
+已实现八算子分版本优化、推理工作区复用、KV 直接写入、可配置缓存容量，以及同一次请求的 prefill/decode 直接计时。2026-11-02 的实测结果、失败候选与复现命令见[优化总表](docs/optimization/README.md)。真实模型固定集合首 token 9/9 一致，8-token greedy 仅 5/9 序列完全一致，保留这一验证限制。
+
+准备面试先读[三条简历与 32 个问答](docs/optimization/RESUME_AND_INTERVIEW.md)，再通过[KV Cache 讲解](docs/optimization/KV_CACHE_AND_FORWARD.md)和相应算子记录做手算、查代码与复现实验。主问答统一维护简历表述，[短期计划](RESUME_AND_30_DAY_PLAN.md)安排个人练习；讲解更新于 2026-11-03，本次没有重跑实验。简历中的延迟下降来自算子和执行策略的共同优化，比较对象是项目朴素 CUDA 基线，不代表相对 HF 的等质量加速。
+
+开发时先Xmake构建/安装，再执行`uv pip install --python .venv/bin/python --no-deps -e ./python`，避免从site-packages导入旧副本。下方继续保留课程原始要求。
+
 ## 简介
 
 LLAISYS（Let's Learn AI SYStem）是一个教育项目，旨在为新手和未来的 AI 工程师提供一个从零开始构建 AI 系统的学习平台。LLAISYS 包含多个帮助学生学习和构建基础模块的作业，以及面向通过考核并获准晋级学员的项目阶段。LLAISYS使用C++作为系统后端的主要编程语言，并编译成共享库，提供C语言API。前端代码使用Python编写，调用这些API以提供更便捷的测试和与其他架构（如PyTorch）的交互。

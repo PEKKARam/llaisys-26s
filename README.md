@@ -11,6 +11,14 @@ Start with the [beginner learning and career plan (中文)](LEARNING_PLAN.md) fo
 
 This implementation targets a CPU reference backend and single-GPU NVIDIA CUDA inference. Additional GPU platforms are outside the project scope. CUDA operators live in `src/ops/<operator>/nvidia/`, alongside their `cpu/` implementations.
 
+## Current CUDA optimization results
+
+The implementation now includes eight versioned CUDA operators, reusable inference workspace, direct KV-cache writes, configurable cache capacity and same-request prefill/decode timing. The [measured report (中文)](docs/optimization/README.md) preserves the November 2, 2026 results, reproduction commands and rejected experiments. Full-model BF16 greedy is still only 5/9 exact eight-token matches on the fixed smoke set (9/9 first tokens); the report records that limitation.
+
+For interview preparation, start with the [resume and 32-question guide (中文)](docs/optimization/RESUME_AND_INTERVIEW.md), then use the [Cache walkthrough](docs/optimization/KV_CACHE_AND_FORWARD.md) and linked operator notes for worked examples and code references. The guide is the source for resume wording; the [short-term plan (中文)](RESUME_AND_30_DAY_PLAN.md) organizes personal practice. These explanations were updated on November 3, 2026 without rerunning experiments. Reported latency reductions combine operator and execution-strategy changes against this project's naive CUDA baseline, rather than an equal-quality speedup over HF.
+
+For development, build/install with Xmake and install Python in editable mode: `uv pip install --python .venv/bin/python --no-deps -e ./python`. This prevents loading an old copied library from site-packages. The assignment text below is preserved.
+
 ## Introduction
 
 LLAISYS (Let's Learn AI SYStem) is an educational project that aims to provide a platform for new and future AI engineers to learn how to build AI systems from scratch. LLAISYS consists of assignments that help students learn and build the basic modules, followed by a project stage in which qualified students contribute to the InfiniLM inference engine. LLAISYS uses C++ as primary programming language for system backend, and is compiled into shared libraries exposing C language APIs. Frontend codes are written in Python which calls these APIs to provide more convenient testing and interaction with other architectures such as PyTorch.

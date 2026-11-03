@@ -31,21 +31,31 @@ __C {
 
     struct LlaisysQwen2Model;
 
+    struct LlaisysQwen2State {
+        size_t cached_len, cache_capacity, cache_bytes;
+        size_t weight_bytes, workspace_bytes, workspace_allocations;
+    };
+
     __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(
-        const LlaisysQwen2Meta *meta,
-        llaisysDeviceType_t device,
-        const int *device_ids,
-        int ndevice);
+        const LlaisysQwen2Meta *meta, llaisysDeviceType_t device,
+        const int *device_ids, int ndevice);
 
-    __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model *model);
+    __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model);
 
-    __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model *model);
+    __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(
+        struct LlaisysQwen2Model * model);
 
-    __export void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model);
+    __export void llaisysQwen2ModelReset(struct LlaisysQwen2Model * model);
 
-    __export int64_t llaisysQwen2ModelInfer(
-        struct LlaisysQwen2Model *model,
-        const int64_t *token_ids,
-        size_t ntoken);
+    __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model,
+                                            const int64_t *token_ids,
+                                            size_t ntoken);
+
+    // Model APIs catch C++ exceptions. Infer returns -1 on error; other pointer
+    // APIs return null. The error string is thread-local and cleared by the
+    // next call.
+    __export const char *llaisysQwen2LastError();
+    __export int llaisysQwen2ModelState(struct LlaisysQwen2Model * model,
+                                        struct LlaisysQwen2State * state);
 }
 #endif // LLAISYS_MODELS_QWEN2_H

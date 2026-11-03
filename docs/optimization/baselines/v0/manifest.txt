@@ -1,0 +1,14 @@
+{
+  "src/ops/swiglu/nvidia/swiglu_nvidia.cu": "1e9c333ebf0a5c3aa61c418a8177b450aec2197d6df059ced51cea521c47f461",
+  "src/ops/argmax/nvidia/argmax_nvidia.cu": "4604517c96d262818750226a31d3fc10985af1efe3f896e5917058d1c789a206",
+  "src/ops/linear/nvidia/linear_nvidia.cu": "f418ba8682e7bbc9b9cbfc8404e0d7b272e0a878f71a7de09444abffeba7a815",
+  "src/ops/rope/nvidia/rope_nvidia.cu": "b0ad6b414fe50b66688dae335d369884d5e02abb786266a21a3d3a817d4b50e3",
+  "src/ops/rms_norm/nvidia/rms_norm_nvidia.cu": "c6fa41e2e5c8027c65d5b867a8ef4484416989fd3acd2342a377a0bc0e8929f6",
+  "src/ops/add/nvidia/add_nvidia.cu": "6946ad8dc88b257a817d64247e3efccb91fd371961d16aba03936d6df25fa1d3",
+  "src/ops/self_attention/nvidia/self_attention_nvidia.cu": "dcb1e303fa9d76cec8fcfc2eabf6f269c4fc13eed7479ca304d6be8afcb0a803",
+  "src/ops/embedding/nvidia/embedding_nvidia.cu": "d15c279cf945ccacd62e8196f9e47909f3d8b8d3d9d501e9d9308a7aa1b8d508",
+  "src/ops/nvidia/common.cuh": "f533e3ae183ea49b24b95b30974cb6f3d5749a75a0c73557e5771bd17757ed6e",
+  "src/models/qwen2/model.cpp": "29dba1cc318df10238433459676367121d36dd246b773f4169e99ad85a42e969",
+  "src/models/qwen2/model.hpp": "ca569fb50c7694e09d53361ad48699165589408ea7a1b1f71432a4b93633a8c9",
+  "python/llaisys/models/qwen2.py": "85edc03150e5d0e7789fb4aa017bbb743e23f6fa72d050ae03745da21264f696"
+}

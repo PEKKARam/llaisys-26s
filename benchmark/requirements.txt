@@ -1,0 +1,6 @@
+# Tested together for prepare_prompts.py. Install in the project's virtualenv.
+transformers==5.15.0
+datasets==5.1.0
+huggingface-hub==1.33.0
+# The local network uses a SOCKS proxy; HTTPX needs its optional SOCKS transport.
+httpx[socks]==0.28.1
